@@ -8,6 +8,7 @@ import state from './state.js';
 import utils from './utils.js';
 import storage from './storage.js';
 import whatsappHandler from './whatsappHandler.js';
+import { isRecoverableUnhandledRejection } from './processErrors.js';
 
 const isSmokeTest = process.env.WA2DC_SMOKE_TEST === '1';
 
@@ -24,10 +25,21 @@ if (!globalThis.crypto) {
   ];
   state.logger = pino({ mixin() { return { version }; } }, pino.multistream(streams));
   let autoSaver = setInterval(() => storage.save(), 5 * 60 * 1000);
+  let shuttingDown = false;
   ['SIGINT', 'SIGTERM', 'uncaughtException', 'unhandledRejection'].forEach((eventName) => {
     process.on(eventName, async (err) => {
+      if (eventName === 'unhandledRejection' && isRecoverableUnhandledRejection(err)) {
+        state.logger.warn({ err }, 'Ignoring recoverable network rejection');
+        return;
+      }
+      if (shuttingDown) {
+        return;
+      }
+      shuttingDown = true;
       clearInterval(autoSaver);
-      state.logger.error(err);
+      if (err != null) {
+        state.logger.error(err);
+      }
       state.logger.info('Exiting!');
       let logs = '';
       try {
