@@ -3,13 +3,14 @@ import fs from 'fs/promises';
 import path from 'path';
 import net from 'net';
 import discordJs from 'discord.js';
+import { BufferJSON } from '@whiskeysockets/baileys';
 
 import state from './state.js';
 import { createDiscordClient } from './clientFactories.js';
+import sqliteStore from './persistence/sqliteStore.js';
 
 const isSmokeTest = process.env.WA2DC_SMOKE_TEST === '1';
 const STORAGE_DIR_MODE = 0o700;
-const STORAGE_FILE_MODE = 0o600;
 
 const { Intents } = discordJs;
 
@@ -45,31 +46,207 @@ const bidirectionalMap = (capacity, data) => {
   );
 };
 
+const normalizeAuthJson = (raw) => JSON.stringify(JSON.parse(raw, BufferJSON.reviver), BufferJSON.replacer);
+
+const existsAs = async (targetPath, type) => {
+  try {
+    const stat = await fs.stat(targetPath);
+    return type === 'dir' ? stat.isDirectory() : stat.isFile();
+  } catch {
+    return false;
+  }
+};
+
+const movePath = async (from, to) => {
+  try {
+    await fs.rename(from, to);
+    return;
+  } catch (err) {
+    if (err?.code !== 'EXDEV') {
+      throw err;
+    }
+  }
+
+  await fs.cp(from, to, { recursive: true });
+  await fs.rm(from, { recursive: true, force: true });
+};
+
 const storage = {
   _storageDir: './storage/',
+  _initialized: false,
+  _settingsName: 'settings',
+  _chatsName: 'chats',
+  _contactsName: 'contacts',
+  _lastMessagesName: 'lastMessages',
+  _startTimeName: 'lastTimestamp',
+
   async ensureStorageDir() {
     await fs.mkdir(this._storageDir, { recursive: true, mode: STORAGE_DIR_MODE });
-  },
-  async upsert(name, data) {
-    const key = sanitizeStorageKey(name);
-    await this.ensureStorageDir();
-    const targetPath = path.join(this._storageDir, key);
-    await fs.writeFile(targetPath, data, { mode: STORAGE_FILE_MODE });
     if (process.platform !== 'win32') {
-      await fs.chmod(targetPath, STORAGE_FILE_MODE).catch(() => {});
+      await fs.chmod(this._storageDir, STORAGE_DIR_MODE).catch(() => {});
     }
   },
 
-  async saveSettings() {
-    await this.upsert(this._settingsName, JSON.stringify(state.settings));
+  async _readLegacyFile(filePath) {
+    try {
+      return await fs.readFile(filePath, 'utf8');
+    } catch {
+      return null;
+    }
+  },
+
+  async _collectLegacyMigrationPayload() {
+    const base = this._storageDir;
+    const appFiles = [
+      this._settingsName,
+      this._chatsName,
+      this._contactsName,
+      this._lastMessagesName,
+      this._startTimeName,
+    ];
+
+    const appState = {};
+    const backupSources = [];
+
+    for (const name of appFiles) {
+      const filePath = path.join(base, name);
+      if (!await existsAs(filePath, 'file')) continue;
+      const raw = await this._readLegacyFile(filePath);
+      if (raw == null) continue;
+      appState[name] = raw;
+      backupSources.push({ name, sourcePath: filePath, type: 'file' });
+    }
+
+    const authDirPath = path.join(base, 'baileys');
+    const authCreds = null;
+    const authKeys = {};
+    let creds = authCreds;
+
+    if (await existsAs(authDirPath, 'dir')) {
+      const entries = await fs.readdir(authDirPath, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        const fileName = path.basename(entry.name);
+        const raw = await this._readLegacyFile(path.join(authDirPath, fileName));
+        if (raw == null) continue;
+        if (fileName === 'creds.json') {
+          creds = normalizeAuthJson(raw);
+        } else {
+          authKeys[fileName] = normalizeAuthJson(raw);
+        }
+      }
+
+      backupSources.push({ name: 'baileys', sourcePath: authDirPath, type: 'dir' });
+    }
+
+    const hasLegacyData = Object.keys(appState).length > 0 || creds != null || Object.keys(authKeys).length > 0;
+
+    return {
+      hasLegacyData,
+      appState,
+      authCreds: creds,
+      authKeys,
+      backupSources,
+    };
+  },
+
+  async _backupLegacySources(backupSources = []) {
+    if (!backupSources.length) {
+      return;
+    }
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupDir = path.join(this._storageDir, `legacy-backup-${timestamp}`);
+    await fs.mkdir(backupDir, { recursive: true, mode: STORAGE_DIR_MODE });
+    if (process.platform !== 'win32') {
+      await fs.chmod(backupDir, STORAGE_DIR_MODE).catch(() => {});
+    }
+
+    for (const source of backupSources) {
+      try {
+        const exists = await existsAs(source.sourcePath, source.type);
+        if (!exists) continue;
+        await movePath(source.sourcePath, path.join(backupDir, source.name));
+      } catch (err) {
+        state.logger?.warn?.({ err, source: source.sourcePath }, 'Failed to move migrated legacy source into backup directory');
+      }
+    }
+  },
+
+  async _migrateLegacyToSqliteIfNeeded() {
+    const done = sqliteStore.getMeta('legacy_migration_done');
+    if (done === '1') {
+      return;
+    }
+
+    const payload = await this._collectLegacyMigrationPayload();
+    const migratedAt = String(Date.now());
+
+    if (!payload.hasLegacyData) {
+      sqliteStore.transaction(() => {
+        sqliteStore.setMeta('legacy_migration_done', '1');
+        sqliteStore.setMeta('migrated_at', migratedAt);
+      });
+      return;
+    }
+
+    sqliteStore.transaction(() => {
+      for (const [key, value] of Object.entries(payload.appState)) {
+        sqliteStore.setAppState(key, value);
+      }
+      if (payload.authCreds != null) {
+        sqliteStore.setAuthCreds(payload.authCreds);
+      }
+      if (Object.keys(payload.authKeys).length > 0) {
+        sqliteStore.setAuthKeys(payload.authKeys);
+      }
+      sqliteStore.setMeta('legacy_migration_done', '1');
+      sqliteStore.setMeta('migrated_at', migratedAt);
+    });
+
+    await this._backupLegacySources(payload.backupSources);
+    state.logger?.info?.('Legacy storage was migrated to SQLite.');
+  },
+
+  async init() {
+    if (this._initialized) {
+      return;
+    }
+
+    await this.ensureStorageDir();
+    sqliteStore.setStorageDir(this._storageDir);
+    await sqliteStore.init({ logger: state.logger });
+    await this._migrateLegacyToSqliteIfNeeded();
+    this._initialized = true;
+  },
+
+  async ensureInitialized() {
+    await this.init();
+  },
+
+  async close() {
+    sqliteStore.close();
+    this._initialized = false;
+  },
+
+  async upsert(name, data) {
+    await this.ensureInitialized();
+    const key = sanitizeStorageKey(name);
+    sqliteStore.setAppState(key, String(data));
   },
 
   async get(name) {
+    await this.ensureInitialized();
     const key = sanitizeStorageKey(name);
-    return fs.readFile(path.join(this._storageDir, key)).catch(() => null)
+    const value = sqliteStore.getAppState(key);
+    return value == null ? null : Buffer.from(value, 'utf8');
   },
 
-  _settingsName: 'settings',
+  async saveSettings() {
+    await this.ensureInitialized();
+    sqliteStore.setAppState(this._settingsName, JSON.stringify(state.settings));
+  },
+
   async parseSettings() {
     if (isSmokeTest) {
       const smokeDefaults = {
@@ -83,7 +260,8 @@ const storage = {
       return Object.assign(state.settings, smokeDefaults);
     }
 
-    const result = await this.get(this._settingsName);
+    await this.ensureInitialized();
+    const result = sqliteStore.getAppState(this._settingsName);
     if (result == null) {
       return setup.firstRun();
     }
@@ -116,26 +294,26 @@ const storage = {
       const settings = Object.assign(state.settings, parsed);
       if (settings.Token === '') return setup.firstRun();
       return settings;
-    } catch (err) {
+    } catch {
       return setup.firstRun();
     }
   },
 
-  _chatsName: 'chats',
   async parseChats() {
-    const result = await this.get(this._chatsName);
+    await this.ensureInitialized();
+    const result = sqliteStore.getAppState(this._chatsName);
     return result ? JSON.parse(result) : {};
   },
 
-  _contactsName: 'contacts',
   async parseContacts() {
-    const result = await this.get(this._contactsName);
+    await this.ensureInitialized();
+    const result = sqliteStore.getAppState(this._contactsName);
     return result ? JSON.parse(result) : {};
   },
 
-  _lastMessagesName: 'lastMessages',
   async parseLastMessages() {
-    const result = await this.get(this._lastMessagesName);
+    await this.ensureInitialized();
+    const result = sqliteStore.getAppState(this._lastMessagesName);
     const capacity = state.settings.lastMessageStorage * 2;
     if (!result) {
       return bidirectionalMap(capacity);
@@ -150,18 +328,57 @@ const storage = {
     }
   },
 
-  _startTimeName: 'lastTimestamp',
   async parseStartTime() {
-    const result = await this.get(this._startTimeName);
+    await this.ensureInitialized();
+    const result = sqliteStore.getAppState(this._startTimeName);
     return result ? parseInt(result, 10) : Math.round(Date.now() / 1000);
   },
 
   async save() {
-    await this.upsert(this._settingsName, JSON.stringify(state.settings));
-    await this.upsert(this._chatsName, JSON.stringify(state.chats));
-    await this.upsert(this._contactsName, JSON.stringify(state.contacts));
-    await this.upsert(this._lastMessagesName, JSON.stringify(state.lastMessages ?? {}));
-    await this.upsert(this._startTimeName, state.startTime.toString());
+    await this.ensureInitialized();
+    sqliteStore.transaction(() => {
+      sqliteStore.setAppState(this._settingsName, JSON.stringify(state.settings));
+      sqliteStore.setAppState(this._chatsName, JSON.stringify(state.chats));
+      sqliteStore.setAppState(this._contactsName, JSON.stringify(state.contacts));
+      sqliteStore.setAppState(this._lastMessagesName, JSON.stringify(state.lastMessages ?? {}));
+      sqliteStore.setAppState(this._startTimeName, state.startTime.toString());
+    });
+  },
+
+  async getAuthCredsRaw() {
+    await this.ensureInitialized();
+    return sqliteStore.getAuthCreds();
+  },
+
+  async setAuthCredsRaw(raw) {
+    await this.ensureInitialized();
+    sqliteStore.setAuthCreds(raw);
+  },
+
+  async getAuthKeysRaw(fileKeys) {
+    await this.ensureInitialized();
+    return sqliteStore.getAuthKeys(fileKeys);
+  },
+
+  async setAuthKeysRaw(entries) {
+    await this.ensureInitialized();
+    if (!entries || Object.keys(entries).length === 0) {
+      return;
+    }
+    sqliteStore.setAuthKeys(entries);
+  },
+
+  async deleteAuthKeysRaw(fileKeys = []) {
+    await this.ensureInitialized();
+    if (!fileKeys.length) {
+      return;
+    }
+    sqliteStore.deleteAuthKeys(fileKeys);
+  },
+
+  async clearAuthState() {
+    await this.ensureInitialized();
+    sqliteStore.clearAuthState();
   },
 };
 
@@ -196,22 +413,20 @@ const setup = {
   async firstRun() {
     const settings = state.settings;
     state.logger?.info('It seems like this is your first run.');
-    if (process.env.WA2DC_TOKEN === "CHANGE_THIS_TOKEN") {
-      state.logger?.info("Please set WA2DC_TOKEN environment variable.");
+    if (process.env.WA2DC_TOKEN === 'CHANGE_THIS_TOKEN') {
+      state.logger?.info('Please set WA2DC_TOKEN environment variable.');
       process.exit();
     }
-    const input = async (query) => {
-      return new Promise((resolve) => {
-        const rl = readline.createInterface({
-          input: process.stdin,
-          output: process.stdout,
-        });
-        rl.question(query, (answer) => {
-          resolve(answer);
-          rl.close();
-        });
+    const input = async (query) => new Promise((resolve) => {
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
       });
-    };
+      rl.question(query, (answer) => {
+        resolve(answer);
+        rl.close();
+      });
+    });
     settings.Token = process.env.WA2DC_TOKEN || await input('Please enter your bot token: ');
     Object.assign(settings, await this.setupDiscordChannels(settings.Token));
     return settings;

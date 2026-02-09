@@ -17,7 +17,7 @@ if (!globalThis.crypto) {
 }
 
 (async () => {
-  const version = 'v2.1.5';
+  const version = 'v2.1.6-alpha.0';
   state.version = version;
   const streams = [
     { stream: pino.destination('logs.txt') },
@@ -94,6 +94,14 @@ if (!globalThis.crypto) {
     process.exit(1);
   }
   state.logger.info('Conversion completed.');
+
+  try {
+    await storage.ensureInitialized();
+    state.logger.info('SQLite storage initialized.');
+  } catch (err) {
+    state.logger.error({ err }, 'Failed to initialize SQLite storage');
+    process.exit(1);
+  }
 
   state.settings = await storage.parseSettings();
   state.logger.info('Loaded settings.');

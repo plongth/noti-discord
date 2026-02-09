@@ -57,8 +57,8 @@ test('Smoke boots successfully via watchdog runner (WA2DC_SMOKE_TEST)', async ()
     assert.equal(result.code, 0, result.stderr);
     const combined = `${result.stdout}\n${result.stderr}`;
     assert.ok(combined.includes('Smoke test completed successfully.'), combined);
+    await fs.stat(path.join(tempDir, 'storage', 'wa2dc.sqlite'));
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 });
-

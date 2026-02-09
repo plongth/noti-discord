@@ -3518,10 +3518,13 @@ const whatsapp = {
   },
 
   async deleteSession() {
+    await storage.clearAuthState();
     const dir = './storage/baileys';
-    const files = await fs.promises.readdir(dir);
-    for (let file of files) {
-      fs.unlinkSync(path.join(dir, file));
+    const files = await fs.promises.readdir(dir).catch(() => []);
+    for (const file of files) {
+      const fullPath = path.join(dir, file);
+      // Best-effort legacy cleanup for pre-SQLite auth stores.
+      await fs.promises.rm(fullPath, { recursive: true, force: true }).catch(() => {});
     }
   }
 };

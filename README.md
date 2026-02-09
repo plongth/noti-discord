@@ -28,6 +28,14 @@ Originally created by [Fatih Kilic](https://github.com/FKLC), the project is now
 
 - WA2DC intentionally relies on Discord permissions for access control. Keep the control channel private and restrict who can use bot commands using Discord role/channel permissions.
 
+## Persistence
+
+- WA2DC stores app state and WhatsApp auth keys in `storage/wa2dc.sqlite` (embedded SQLite, no external database service required).
+- On first boot after upgrade, legacy file-based data is migrated automatically from `storage/settings`, `storage/chats`, `storage/contacts`, `storage/lastMessages`, `storage/lastTimestamp`, and `storage/baileys/*`.
+- Migrated legacy files are moved to `storage/legacy-backup-<timestamp>/`.
+- Optional payload encryption-at-rest is available through `WA2DC_DB_PASSPHRASE` (set it before first DB creation).
+- If the DB is encrypted and `WA2DC_DB_PASSPHRASE` is missing or wrong, WA2DC exits during startup instead of running with invalid auth state.
+
 ## Disclaimer
 
 > [!CAUTION]

@@ -3,7 +3,6 @@ import {
   getAggregateVotesInPollMessage,
   proto,
   updateMessageWithPollUpdate,
-  useMultiFileAuthState,
   WAMessageStatus,
   WAMessageStubType,
 } from '@whiskeysockets/baileys';
@@ -13,6 +12,7 @@ import { getKeyAuthor } from '@whiskeysockets/baileys/lib/Utils/generics.js';
 import utils from './utils.js';
 import state from './state.js';
 import { createWhatsAppClient, getBaileysVersion } from './clientFactories.js';
+import useSQLiteAuthState from './auth/sqliteAuthState.js';
 import groupMetadataCache from './groupMetadataCache.js';
 import messageStore from './messageStore.js';
 import { createGroupRefreshScheduler } from './groupMetadataRefresh.js';
@@ -1177,7 +1177,7 @@ const connectToWhatsApp = async (retry = 1) => {
 
 const actions = {
     async start() {
-        const baileyState = await useMultiFileAuthState('./storage/baileys');
+        const baileyState = await useSQLiteAuthState();
         await ensureSignalStoreSupport(baileyState.state?.keys);
         authState = baileyState.state;
         saveState = baileyState.saveCreds;
