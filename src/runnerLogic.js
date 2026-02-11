@@ -3,6 +3,10 @@ import path from 'path';
 
 export const DEFAULT_RESTART_DELAY_MS = 10_000;
 export const DEFAULT_MAX_RESTARTS = 5;
+export const UPDATE_VALIDATION_WINDOW_MS = 120_000;
+export const UPDATE_ROLLBACK_CRASH_THRESHOLD = 2;
+
+const RESTART_REASONS = new Set(['manual', 'update', 'rollback']);
 
 export const resolveRestartDelayMs = (rawValue, defaultDelayMs = DEFAULT_RESTART_DELAY_MS) => {
   const parsed = Number(rawValue);
@@ -25,9 +29,46 @@ export const resolveRestartFlagPath = (rawValue, cwd = process.cwd()) => (
 
 export const computeBackoffDelayMs = (baseDelayMs, attempt) => baseDelayMs * (2 ** (attempt - 1));
 
-export const clearRestartFlagSync = (flagPath, { logger, fsModule = fs } = {}) => {
+export const parseRestartFlagPayload = (raw) => {
+  const fallback = { reason: 'manual', targetVersion: null };
+  if (typeof raw !== 'string') {
+    return fallback;
+  }
+
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return fallback;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== 'object') {
+      return fallback;
+    }
+
+    const reason = RESTART_REASONS.has(parsed.reason) ? parsed.reason : 'manual';
+    const targetVersion = typeof parsed.targetVersion === 'string' && parsed.targetVersion.trim()
+      ? parsed.targetVersion.trim()
+      : null;
+    return { reason, targetVersion };
+  } catch {
+    return fallback;
+  }
+};
+
+export const consumeRestartFlagSync = (flagPath, { logger, fsModule = fs } = {}) => {
+  const fallback = { requested: false, reason: 'manual', targetVersion: null };
   if (!fsModule.existsSync(flagPath)) {
-    return false;
+    return fallback;
+  }
+
+  let rawPayload = '';
+  try {
+    rawPayload = fsModule.readFileSync(flagPath, 'utf8');
+  } catch (err) {
+    if (err?.code !== 'ENOENT') {
+      logger?.warn?.({ err }, 'Failed to read restart flag');
+    }
   }
 
   try {
@@ -38,7 +79,155 @@ export const clearRestartFlagSync = (flagPath, { logger, fsModule = fs } = {}) =
     }
   }
 
-  return true;
+  const parsed = parseRestartFlagPayload(rawPayload);
+  return {
+    requested: true,
+    reason: parsed.reason,
+    targetVersion: parsed.targetVersion,
+  };
+};
+
+export const clearRestartFlagSync = (flagPath, { logger, fsModule = fs } = {}) => (
+  consumeRestartFlagSync(flagPath, { logger, fsModule }).requested
+);
+
+export const resolveRollbackBackupCandidates = ({
+  currentExeName,
+  execPath = process.execPath,
+  cwd = process.cwd(),
+  pathModule = path,
+} = {}) => {
+  const candidates = [];
+  if (typeof currentExeName === 'string' && currentExeName) {
+    candidates.push(pathModule.resolve(cwd, `${currentExeName}.oldVersion`));
+  }
+  if (typeof execPath === 'string' && execPath) {
+    candidates.push(pathModule.join(
+      pathModule.dirname(execPath),
+      `${pathModule.basename(execPath)}.oldVersion`,
+    ));
+  }
+  return [...new Set(candidates)];
+};
+
+export const findRollbackBackupPathSync = ({
+  currentExeName,
+  execPath = process.execPath,
+  cwd = process.cwd(),
+  fsModule = fs,
+  pathModule = path,
+} = {}) => {
+  const candidates = resolveRollbackBackupCandidates({
+    currentExeName,
+    execPath,
+    cwd,
+    pathModule,
+  });
+
+  for (const candidate of candidates) {
+    if (fsModule.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+};
+
+export const revertExecutableToBackupSync = ({
+  currentExeName,
+  execPath = process.execPath,
+  cwd = process.cwd(),
+  fsModule = fs,
+  pathModule = path,
+} = {}) => {
+  const backupPath = findRollbackBackupPathSync({
+    currentExeName,
+    execPath,
+    cwd,
+    fsModule,
+    pathModule,
+  });
+  if (!backupPath) {
+    return { success: false, reason: 'no-backup' };
+  }
+
+  const currentPath = (typeof execPath === 'string' && execPath)
+    ? execPath
+    : pathModule.resolve(cwd, currentExeName || '');
+
+  try {
+    fsModule.rmSync(currentPath, { force: true });
+  } catch (err) {
+    if (err?.code !== 'ENOENT') {
+      return { success: false, reason: 'remove-failed', err };
+    }
+  }
+
+  try {
+    fsModule.renameSync(backupPath, currentPath);
+  } catch (err) {
+    return { success: false, reason: 'rename-failed', err };
+  }
+
+  return {
+    success: true,
+    reason: null,
+    backupPath,
+    currentPath,
+  };
+};
+
+export const createUpdateValidationState = ({ targetVersion = null, nowMs = Date.now() } = {}) => ({
+  active: true,
+  crashCount: 0,
+  startedAt: nowMs,
+  rollbackAttempted: false,
+  version: typeof targetVersion === 'string' && targetVersion.trim() ? targetVersion.trim() : null,
+});
+
+export const evaluateUpdateValidationExit = ({
+  validationState = null,
+  exitCode = 0,
+  runtimeMs = 0,
+  healthyWindowMs = UPDATE_VALIDATION_WINDOW_MS,
+  crashThreshold = UPDATE_ROLLBACK_CRASH_THRESHOLD,
+} = {}) => {
+  if (!validationState?.active) {
+    return {
+      validationState,
+      shouldAttemptRollback: false,
+      reason: 'inactive',
+    };
+  }
+
+  if (runtimeMs >= healthyWindowMs) {
+    return {
+      validationState: null,
+      shouldAttemptRollback: false,
+      reason: 'healthy-runtime',
+    };
+  }
+
+  if (exitCode === 0) {
+    return {
+      validationState,
+      shouldAttemptRollback: false,
+      reason: 'clean-exit',
+    };
+  }
+
+  const crashCount = Number(validationState.crashCount || 0) + 1;
+  const rollbackAttempted = Boolean(validationState.rollbackAttempted);
+  const shouldAttemptRollback = !rollbackAttempted && crashCount >= crashThreshold;
+
+  return {
+    validationState: {
+      ...validationState,
+      crashCount,
+      rollbackAttempted: rollbackAttempted || shouldAttemptRollback,
+    },
+    shouldAttemptRollback,
+    reason: shouldAttemptRollback ? 'rollback-threshold' : 'crash-counted',
+  };
 };
 
 export const evaluateWorkerExit = ({
@@ -105,4 +294,3 @@ export const evaluateWorkerExit = ({
     delayMs: computeBackoffDelayMs(restartDelayMs, attempts),
   };
 };
-

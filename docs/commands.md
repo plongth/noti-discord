@@ -274,10 +274,12 @@ Manually check for updates on the active channel.
 Dismiss the current update notification without installing.
 
 ### `/update`
-Download and install the available release (packaged installs only). Docker/source deployments will be reminded to pull and restart manually.
+Download and install the available release (packaged installs only). Docker/source deployments will be reminded to pull and restart manually.  
+If the updated packaged binary crash-loops during startup, the watchdog runner automatically rolls back to the previous `.oldVersion` binary (2 non-zero exits before 120 seconds uptime).
 
 ### `/rollback`
-Restore the previous packaged binary when one is available. The dedicated “Roll back” button only appears if a backup exists.
+Restore the previous packaged binary when one is available. The dedicated “Roll back” button only appears if a backup exists.  
+This is still useful for manual recovery, but update failures are now auto-rolled back by the watchdog runner when possible.
 
 ---
 

@@ -45,7 +45,15 @@ const discordMessageLocationCache = new Map();
 const discordMessageLocationTimers = new Map();
 let restartInProgress = false;
 
-const requestSafeRestart = async (ctx, { message = 'Restarting...', exitCode = 0 } = {}) => {
+const requestSafeRestart = async (
+  ctx,
+  {
+    message = 'Restarting...',
+    exitCode = 0,
+    reason = 'manual',
+    targetVersion = null,
+  } = {},
+) => {
   if (restartInProgress) {
     await ctx.reply('Restart already in progress.');
     return;
@@ -66,8 +74,13 @@ const requestSafeRestart = async (ctx, { message = 'Restarting...', exitCode = 0
   const flagPath = resolveRestartFlagPath(process.env.WA2DC_RESTART_FLAG_PATH, process.cwd());
   let flagWritten = true;
   let resolvedExitCode = exitCode;
+  const restartPayload = JSON.stringify({
+    reason,
+    requestedAt: Date.now(),
+    ...(targetVersion ? { targetVersion } : {}),
+  });
   try {
-    await fs.promises.writeFile(flagPath, '');
+    await fs.promises.writeFile(flagPath, restartPayload, 'utf8');
   } catch (err) {
     flagWritten = false;
     resolvedExitCode = resolvedExitCode === 0 ? 1 : resolvedExitCode;
@@ -2408,7 +2421,7 @@ const commandHandlers = {
         return;
       }
 
-      await requestSafeRestart(ctx, { message: 'Saved state. Restarting...' });
+      await requestSafeRestart(ctx, { message: 'Saved state. Restarting...', reason: 'manual' });
     },
   },
   updatechannel: {
@@ -2457,6 +2470,7 @@ const commandHandlers = {
         return;
       }
 
+      const targetVersion = state.updateInfo.version;
       await ctx.reply('Updating...');
       const success = await utils.updater.update(state.updateInfo.version);
       if (!success) {
@@ -2467,7 +2481,11 @@ const commandHandlers = {
       state.updateInfo = null;
       await utils.discord.syncUpdatePrompt();
       await utils.discord.syncRollbackPrompt();
-      await requestSafeRestart(ctx, { message: 'Update downloaded. Restarting...' });
+      await requestSafeRestart(ctx, {
+        message: 'Update downloaded. Restarting...',
+        reason: 'update',
+        targetVersion,
+      });
     },
   },
   checkupdate: {
@@ -2514,7 +2532,10 @@ const commandHandlers = {
       const result = await utils.updater.rollback();
       if (result.success) {
         await utils.discord.syncRollbackPrompt();
-        await requestSafeRestart(ctx, { message: 'Rolled back to the previous packaged binary. Restarting...' });
+        await requestSafeRestart(ctx, {
+          message: 'Rolled back to the previous packaged binary. Restarting...',
+          reason: 'rollback',
+        });
         return;
       }
 

@@ -86,6 +86,7 @@ This keeps you in control of when updates are applied instead of auto-updating.
 - Packaged binaries can apply updates after you confirm with the `update` command. Set `WA2DC_KEEP_OLD_BINARY=1` to keep the previous executable as a rollback.
 - Switch channels from the control channel with `updateChannel stable|unstable`.
 - Packaged installs keep the previous binary so you can run `rollback` from the control channel if a release breaks.
+- Packaged installs running through `src/runner.js` now auto-rollback after an `/update` if the new build crash-loops during startup (2 non-zero exits before 120 seconds uptime).
 - Docker and source installs only notify you. Review the changelog and pull a new image when you are ready.
 - Pinning a specific version tag makes rollbacks easier on Docker.
 
