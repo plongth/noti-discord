@@ -399,6 +399,110 @@ test('Discord raw user and role mentions are converted before forwarding to What
   }
 });
 
+test('Discord embeds are ignored when DiscordEmbedsToWhatsApp is disabled', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  const originalEmbedSetting = state.settings.DiscordEmbedsToWhatsApp;
+  try {
+    state.settings.DiscordEmbedsToWhatsApp = false;
+
+    harness.fakeClient.ev.emit('discordMessage', {
+      jid: 'jid@s.whatsapp.net',
+      message: {
+        id: 'dc-embed-disabled',
+        content: 'base text',
+        cleanContent: 'base text',
+        webhookId: null,
+        author: { username: 'BridgeUser' },
+        member: { displayName: 'BridgeUser' },
+        channel: { send: async () => {} },
+        attachments: new Map(),
+        stickers: new Map(),
+        embeds: [{
+          title: 'Embed Title',
+          description: 'Embed body',
+          url: 'https://example.com/embed',
+        }],
+        mentions: { users: new Map(), members: new Map(), roles: new Map() },
+      },
+    });
+
+    await delay(0);
+
+    assert.equal(harness.fakeClient.sendCalls.length, 1);
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, 'base text');
+  } finally {
+    state.settings.DiscordEmbedsToWhatsApp = originalEmbedSetting;
+    harness.cleanup();
+  }
+});
+
+test('Discord embeds can be mirrored to WhatsApp with mention conversion', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  const originalEmbedSetting = state.settings.DiscordEmbedsToWhatsApp;
+  const originalMentionLinks = { ...(state.settings.WhatsAppDiscordMentionLinks || {}) };
+  const originalContacts = snapshotObject(state.contacts);
+  try {
+    state.settings.DiscordEmbedsToWhatsApp = true;
+    const linkedJid = '14155550123@s.whatsapp.net';
+    state.contacts[linkedJid] = 'Panos';
+    state.settings.WhatsAppDiscordMentionLinks = { [linkedJid]: '123456789012345678' };
+
+    harness.fakeClient.ev.emit('discordMessage', {
+      jid: 'jid@s.whatsapp.net',
+      message: {
+        id: 'dc-embed-enabled',
+        content: '',
+        cleanContent: '',
+        webhookId: null,
+        author: { username: 'BridgeUser' },
+        member: { displayName: 'BridgeUser' },
+        channel: { send: async () => {} },
+        attachments: new Map(),
+        stickers: new Map(),
+        embeds: [{
+          title: 'Embed Title',
+          description: 'Hi <@123456789012345678> and <@&987654321098765432>',
+          fields: [{ name: 'Scope', value: '<@123456789012345678>' }],
+          url: 'https://example.com/embed',
+        }],
+        mentions: { users: new Map(), members: new Map(), roles: new Map() },
+        client: {
+          users: {
+            fetch: async (id) => (id === '123456789012345678'
+              ? { id, username: 'panos-discord', globalName: 'Panos' }
+              : null),
+          },
+        },
+        guild: {
+          members: {
+            cache: new Map(),
+            fetch: async (id) => (id === '123456789012345678' ? { id, displayName: 'Panos' } : null),
+          },
+          roles: {
+            cache: new Map(),
+            fetch: async (id) => (id === '987654321098765432' ? { id, name: 'Moderators' } : null),
+          },
+        },
+      },
+    });
+
+    await delay(0);
+
+    assert.equal(harness.fakeClient.sendCalls.length, 1);
+    const mirrored = harness.fakeClient.sendCalls[0]?.content?.text || '';
+    assert.ok(mirrored.includes('Embed Title'));
+    assert.ok(mirrored.includes('Hi @Panos and @Moderators'));
+    assert.ok(mirrored.includes('Scope: @Panos'));
+    assert.ok(mirrored.includes('https://example.com/embed'));
+    assert.deepEqual(harness.fakeClient.sendCalls[0]?.content?.mentions, [linkedJid]);
+  } finally {
+    state.settings.DiscordEmbedsToWhatsApp = originalEmbedSetting;
+    state.settings.WhatsAppDiscordMentionLinks = originalMentionLinks;
+    restoreObject(state.contacts, originalContacts);
+    harness.cleanup();
+  }
+});
+
 test('Discord replies warn with interpolated message storage size when quoted message is missing', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
   const originalLimit = state.settings.lastMessageStorage;

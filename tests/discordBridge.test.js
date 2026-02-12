@@ -1026,6 +1026,125 @@ test('Discord bot messages can be blocked from forwarding to WhatsApp', async ()
   }
 });
 
+test('Discord broadcast/crosspost webhooks require redirectannouncements when redirectWebhooks is disabled', async () => {
+  const originalDiscordUtils = {
+    getGuild: utils.discord.getGuild,
+    getControlChannel: utils.discord.getControlChannel,
+    channelIdToJid: utils.discord.channelIdToJid,
+  };
+  const originalSettings = {
+    Token: state.settings.Token,
+    GuildID: state.settings.GuildID,
+    ControlChannelID: state.settings.ControlChannelID,
+    redirectBots: state.settings.redirectBots,
+    redirectWebhooks: state.settings.redirectWebhooks,
+    redirectAnnouncementWebhooks: state.settings.redirectAnnouncementWebhooks,
+  };
+  const originalChats = { ...state.chats };
+  const originalDcClient = state.dcClient;
+  const originalWaClient = state.waClient;
+
+  try {
+    state.settings.Token = 'TEST_TOKEN';
+    state.settings.GuildID = 'guild';
+    state.settings.ControlChannelID = 'control';
+    state.settings.redirectBots = false;
+    state.settings.redirectWebhooks = false;
+    state.settings.redirectAnnouncementWebhooks = false;
+    restoreObject(state.chats, {
+      'jid@s.whatsapp.net': {
+        id: 'bridge-wh-1',
+        type: 1,
+        token: 'tok',
+        channelId: 'chan-1',
+      },
+    });
+
+    utils.discord.getGuild = async () => ({ commands: { set: async () => {} } });
+    utils.discord.getControlChannel = async () => ({ send: async () => {} });
+    utils.discord.channelIdToJid = () => 'jid@s.whatsapp.net';
+
+    const waEvents = [];
+    const waEv = new EventEmitter();
+    waEv.on('discordMessage', (payload) => waEvents.push(payload));
+    state.waClient = { ev: waEv };
+
+    class FakeDiscordClient extends EventEmitter {
+      constructor() {
+        super();
+        this.user = { id: 'bot-1' };
+      }
+
+      async login() {
+        queueMicrotask(() => this.emit('ready'));
+        return this;
+      }
+    }
+
+    const fakeClient = new FakeDiscordClient();
+    setClientFactoryOverrides({ createDiscordClient: () => fakeClient });
+
+    const discordHandler = await importDiscordHandler('broadcast-webhook-forward');
+    state.dcClient = await discordHandler.start();
+
+    // Bridge webhooks should remain blocked to prevent echo loops.
+    fakeClient.emit('messageCreate', {
+      id: 'bridge-webhook-msg',
+      author: { id: 'bot-3', bot: true },
+      applicationId: null,
+      webhookId: 'bridge-wh-1',
+      type: 'DEFAULT',
+      flags: { bitfield: 1 },
+      channel: { id: 'chan-1', type: 'GUILD_TEXT' },
+    });
+    await delay(0);
+    assert.equal(waEvents.length, 0);
+
+    // Crossposted/broadcast webhook should be blocked by default.
+    fakeClient.emit('messageCreate', {
+      id: 'external-webhook-msg',
+      author: { id: 'bot-4', bot: true },
+      applicationId: null,
+      webhookId: 'external-news-webhook',
+      type: 'DEFAULT',
+      flags: { bitfield: 1 },
+      channel: { id: 'chan-1', type: 'GUILD_TEXT' },
+    });
+    await delay(0);
+    assert.equal(waEvents.length, 0);
+
+    // Enabling redirectannouncements should allow it.
+    state.settings.redirectAnnouncementWebhooks = true;
+    fakeClient.emit('messageCreate', {
+      id: 'external-webhook-msg-2',
+      author: { id: 'bot-4', bot: true },
+      applicationId: null,
+      webhookId: 'external-news-webhook',
+      type: 'DEFAULT',
+      flags: { bitfield: 1 },
+      channel: { id: 'chan-1', type: 'GUILD_TEXT' },
+    });
+    await delay(0);
+    assert.equal(waEvents.length, 1);
+  } finally {
+    utils.discord.getGuild = originalDiscordUtils.getGuild;
+    utils.discord.getControlChannel = originalDiscordUtils.getControlChannel;
+    utils.discord.channelIdToJid = originalDiscordUtils.channelIdToJid;
+
+    state.settings.Token = originalSettings.Token;
+    state.settings.GuildID = originalSettings.GuildID;
+    state.settings.ControlChannelID = originalSettings.ControlChannelID;
+    state.settings.redirectBots = originalSettings.redirectBots;
+    state.settings.redirectWebhooks = originalSettings.redirectWebhooks;
+    state.settings.redirectAnnouncementWebhooks = originalSettings.redirectAnnouncementWebhooks;
+    restoreObject(state.chats, originalChats);
+
+    state.dcClient = originalDcClient;
+    state.waClient = originalWaClient;
+    resetClientFactoryOverrides();
+  }
+});
+
 test('Unbridged bot deletes do not spam errors when redirectBots is disabled', async () => {
   const originalDiscordUtils = {
     getGuild: utils.discord.getGuild,

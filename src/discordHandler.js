@@ -272,6 +272,27 @@ const buildForwardContext = (message, rawContext = null) => {
   };
 };
 
+const getMessageFlagsBitfield = (message = {}) => {
+  if (typeof message?.flags === 'number') return message.flags;
+  if (typeof message?.flags?.bitfield === 'number') return message.flags.bitfield;
+  return 0;
+};
+
+const isBroadcastWebhookMessage = (message = {}) => {
+  const flags = getMessageFlagsBitfield(message);
+  const crosspostedMask = Constants.MessageFlags?.CROSSPOSTED ?? 1;
+  const isCrosspostMask = Constants.MessageFlags?.IS_CROSSPOST ?? 2;
+  return message?.channel?.type === 'GUILD_NEWS'
+    || (flags & crosspostedMask) !== 0
+    || (flags & isCrosspostMask) !== 0;
+};
+
+const isBridgeWebhookId = (webhookId) => {
+  if (!webhookId) return false;
+  const normalized = String(webhookId);
+  return Object.values(state.chats || {}).some((chat) => String(chat?.id || '') === normalized);
+};
+
 const collectSourceJidCandidates = async (sourceJid) => {
   const addCandidate = (set, value) => {
     const formatted = utils.whatsapp.formatJid(value);
@@ -1953,6 +1974,22 @@ const commandHandlers = {
       await ctx.reply(`Uploading attachments to WhatsApp is set to ${state.settings.UploadAttachments}.`);
     },
   },
+  waembeds: {
+    description: 'Toggle mirroring Discord embeds to WhatsApp.',
+    options: [
+      {
+        name: 'enabled',
+        description: 'Whether Discord embed text/media should be mirrored to WhatsApp.',
+        type: ApplicationCommandOptionTypes.BOOLEAN,
+        required: true,
+      },
+    ],
+    async execute(ctx) {
+      const enabled = Boolean(ctx.getBooleanOption('enabled'));
+      state.settings.DiscordEmbedsToWhatsApp = enabled;
+      await ctx.reply(`Mirroring Discord embeds to WhatsApp is set to ${state.settings.DiscordEmbedsToWhatsApp}.`);
+    },
+  },
   deletes: {
     description: 'Toggle mirrored message deletions.',
     options: [
@@ -2455,6 +2492,22 @@ const commandHandlers = {
       await ctx.reply(`Redirecting webhooks is set to ${state.settings.redirectWebhooks}.`);
     },
   },
+  redirectannouncements: {
+    description: 'Toggle redirecting announcement/crosspost webhook messages to WhatsApp.',
+    options: [
+      {
+        name: 'enabled',
+        description: 'Whether announcement/crosspost webhook messages should be redirected.',
+        type: ApplicationCommandOptionTypes.BOOLEAN,
+        required: true,
+      },
+    ],
+    async execute(ctx) {
+      const enabled = Boolean(ctx.getBooleanOption('enabled'));
+      state.settings.redirectAnnouncementWebhooks = enabled;
+      await ctx.reply(`Redirecting announcement webhooks is set to ${state.settings.redirectAnnouncementWebhooks}.`);
+    },
+  },
   restart: {
     description: 'Restart the bot safely.',
     async execute(ctx) {
@@ -2726,7 +2779,15 @@ client.on('messageCreate', async (message) => {
   }
 
   if (isWebhookMessage) {
-    if (!state.settings.redirectWebhooks) {
+    if (isBridgeWebhookId(message.webhookId)) {
+      return;
+    }
+    const isAnnouncementWebhook = isBroadcastWebhookMessage(message);
+    if (isAnnouncementWebhook) {
+      if (!state.settings.redirectWebhooks && !state.settings.redirectAnnouncementWebhooks) {
+        return;
+      }
+    } else if (!state.settings.redirectWebhooks) {
       return;
     }
   } else if (message.author?.bot && !state.settings.redirectBots) {

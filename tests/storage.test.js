@@ -51,6 +51,8 @@ test('parseSettings merges defaults when older settings are missing keys', async
     const settings = await storage.parseSettings();
     assert.equal(settings.Token, 'TOK');
     assert.equal(settings.DownloadDir, './downloads');
+    assert.equal(settings.DiscordEmbedsToWhatsApp, false);
+    assert.equal(settings.redirectAnnouncementWebhooks, false);
     assert.equal(settings.LocalDownloads, false);
     assert.equal(settings.PinDurationSeconds, 7 * 24 * 60 * 60);
   });

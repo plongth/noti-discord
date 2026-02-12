@@ -994,11 +994,19 @@ const connectToWhatsApp = async (retry = 1) => {
         const emojiData = utils.discord.extractCustomEmojiData(message);
         const hasOnlyCustomEmoji = emojiData.matches.length > 0 && emojiData.rawWithoutEmoji.trim() === '';
         const emojiFallbackText = emojiData.matches.map((entry) => `:${entry.name}:`).join(' ');
+        const embedMirroringEnabled = Boolean(state.settings.DiscordEmbedsToWhatsApp);
 
         const baseText = message.content ?? message.cleanContent ?? '';
         let text = utils.whatsapp.convertDiscordFormatting(baseText);
         if (isForwardedFromDiscord && !text && typeof forwardSnapshot?.content === 'string') {
             text = utils.whatsapp.convertDiscordFormatting(forwardSnapshot.content);
+        }
+        const embedTextRaw = embedMirroringEnabled && typeof utils.discord.extractEmbedText === 'function'
+            ? utils.discord.extractEmbedText(message, { includeUrls: true })
+            : '';
+        const embedText = embedTextRaw ? utils.whatsapp.convertDiscordFormatting(embedTextRaw) : '';
+        if (embedText) {
+            text = text ? `${text}\n${embedText}` : embedText;
         }
         if (!isForwardedFromDiscord && message.reference) {
             // Discord prepends a mention to replies which results in all
@@ -1024,6 +1032,7 @@ const connectToWhatsApp = async (retry = 1) => {
         const media = utils.discord.collectMessageMedia(message, {
             includeEmojiAttachments: emojiData.matches.length > 0,
             emojiMatches: emojiData.matches,
+            includeEmbedAttachments: embedMirroringEnabled,
         });
         const attachments = [...(media.attachments || [])];
         const snapshotAttachments = Array.isArray(forwardSnapshot?.attachments) ? forwardSnapshot.attachments : [];
@@ -1060,6 +1069,8 @@ const connectToWhatsApp = async (retry = 1) => {
             message.content,
             message.cleanContent,
             forwardSnapshot?.content,
+            embedTextRaw,
+            embedText,
             text,
         ];
         const { mentionDescriptors, fallbackReplacements } = await collectDiscordMentionData(message, mentionTextCandidates, replyMentionId);
@@ -1167,7 +1178,16 @@ const connectToWhatsApp = async (retry = 1) => {
             key.participant = utils.whatsapp.toJid(message.author.username);
         }
 
+        const embedMirroringEnabled = Boolean(state.settings.DiscordEmbedsToWhatsApp);
+        const embedTextRaw = embedMirroringEnabled && typeof utils.discord.extractEmbedText === 'function'
+            ? utils.discord.extractEmbedText(message, { includeUrls: true })
+            : '';
+
         let text = utils.whatsapp.convertDiscordFormatting(message.content ?? message.cleanContent);
+        const embedText = embedTextRaw ? utils.whatsapp.convertDiscordFormatting(embedTextRaw) : '';
+        if (embedText) {
+            text = text ? `${text}\n${embedText}` : embedText;
+        }
         if (message.reference) {
             // Remove Discord's automatic reply mention to avoid tagging
             // every participant on WhatsApp when editing a reply.
@@ -1182,7 +1202,7 @@ const connectToWhatsApp = async (retry = 1) => {
         }
 
         const replyMentionId = message.reference ? message.mentions?.repliedUser?.id : null;
-        const mentionTextCandidates = [message.content, message.cleanContent, text];
+        const mentionTextCandidates = [message.content, message.cleanContent, embedTextRaw, embedText, text];
         const { mentionDescriptors, fallbackReplacements } = await collectDiscordMentionData(message, mentionTextCandidates, replyMentionId);
 
         const linkedMentions = typeof utils.whatsapp.applyDiscordMentionLinks === 'function'

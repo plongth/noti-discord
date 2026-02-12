@@ -132,6 +132,11 @@ To make download links reachable from other devices (phone/PC), you usually want
 Toggle whether Discord attachments are uploaded to WhatsApp (vs sending as links).  
 Usage: `/waupload enabled:<true|false>`
 
+### `/waembeds`
+Toggle whether Discord embed content (text and supported media) is mirrored to WhatsApp.  
+Usage: `/waembeds enabled:<true|false>`  
+Default: `false` (disabled).
+
 ### `/localdownloads`
 Control whether large WhatsApp attachments are downloaded locally when they exceed Discord’s upload limit.  
 Usage: `/localdownloads enabled:<true|false>`
@@ -224,6 +229,11 @@ Usage: `/redirectbots enabled:<true|false>`
 ### `/redirectwebhooks`
 Allow or block Discord webhook messages from being forwarded to WhatsApp.  
 Usage: `/redirectwebhooks enabled:<true|false>`
+
+### `/redirectannouncements`
+Allow or block Discord announcement/crosspost webhooks from being forwarded to WhatsApp.  
+Usage: `/redirectannouncements enabled:<true|false>`  
+Default: `false` (disabled).
 
 ### Typing indicators (automatic)
 When someone starts typing in a linked Discord channel, WA2DC sends WhatsApp presence updates (`composing` / `paused`) to the linked chat so your WhatsApp account shows “typing…”. This only runs when Discord → WhatsApp bridging is enabled (bidirectional or `/oneway direction:whatsapp`). WhatsApp cannot show *which* Discord user is typing—only that the bridge account is.

@@ -585,6 +585,45 @@ const pickEmbedMediaUrl = (embed = {}) => {
   return supported || candidates[0] || null;
 };
 
+const pickEmbedMediaCandidates = (embed = {}) => [
+  embed.image?.url,
+  embed.image?.proxyURL,
+  embed.video?.url,
+  embed.video?.proxyURL,
+  embed.thumbnail?.url,
+  embed.thumbnail?.proxyURL,
+].filter((candidate) => typeof candidate === 'string' && candidate.startsWith('http'));
+
+const formatEmbedTextBlock = (embed = {}, includeUrls = true) => {
+  if (!embed || typeof embed !== 'object') return '';
+  const lines = [];
+  const pushLine = (value) => {
+    if (typeof value !== 'string') return;
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    lines.push(trimmed);
+  };
+
+  pushLine(embed.author?.name);
+  pushLine(embed.title);
+  pushLine(embed.description);
+
+  const fields = Array.isArray(embed.fields) ? embed.fields : [];
+  for (const field of fields) {
+    const name = typeof field?.name === 'string' ? field.name.trim() : '';
+    const value = typeof field?.value === 'string' ? field.value.trim() : '';
+    if (!name && !value) continue;
+    pushLine(name && value ? `${name}: ${value}` : (name || value));
+  }
+
+  pushLine(embed.footer?.text);
+  if (includeUrls) {
+    pushLine(embed.url);
+  }
+
+  return lines.join('\n').trim();
+};
+
 const dedupeAttachments = (attachments = []) => {
   const seen = new Set();
   return attachments.filter((attachment) => {
@@ -1644,16 +1683,54 @@ const discord = {
     }
     return attachments;
   },
-  collectMessageMedia(message, { includeEmojiAttachments = false, emojiMatches = [] } = {}) {
+  extractEmbedMediaAttachments(message) {
+    const embeds = message?.embeds;
+    if (!Array.isArray(embeds) || !embeds.length) return [];
+    const attachments = [];
+    const seenUrls = new Set();
+    for (const embed of embeds) {
+      const baseName = embed?.title || embed?.provider?.name || 'discord-embed';
+      for (const mediaUrl of pickEmbedMediaCandidates(embed)) {
+        if (seenUrls.has(mediaUrl) || isSupportedGifUrl(mediaUrl)) continue;
+        const extension = guessExtensionFromUrl(mediaUrl);
+        if (!extension) continue;
+        const contentType = extensionToMime(extension);
+        if (!contentType.startsWith('image/') && !contentType.startsWith('video/')) continue;
+        seenUrls.add(mediaUrl);
+        attachments.push({
+          url: mediaUrl,
+          name: `${sanitizeFileName(baseName, 'discord-embed')}.${extension}`,
+          contentType,
+        });
+      }
+    }
+    return attachments;
+  },
+  extractEmbedText(message, { includeUrls = true } = {}) {
+    const embeds = message?.embeds;
+    if (!Array.isArray(embeds) || !embeds.length) return '';
+    const blocks = embeds
+      .map((embed) => formatEmbedTextBlock(embed, includeUrls))
+      .filter(Boolean);
+    if (!blocks.length) return '';
+    return blocks.join('\n\n');
+  },
+  collectMessageMedia(message, {
+    includeEmojiAttachments = false,
+    emojiMatches = [],
+    includeEmbedAttachments = false,
+  } = {}) {
     const baseAttachments = message?.attachments?.size ? [...message.attachments.values()] : [];
     const stickerAttachments = this.collectStickerAttachments(message);
     const gifEmbeds = this.extractGifEmbedAttachments(message);
+    const embedAttachments = includeEmbedAttachments ? this.extractEmbedMediaAttachments(message) : [];
     const emojiAttachments = includeEmojiAttachments ? this.buildCustomEmojiAttachments(emojiMatches) : [];
     const consumedUrls = gifEmbeds.map((entry) => entry.sourceUrl).filter(Boolean);
     const combined = dedupeAttachments([
       ...baseAttachments,
       ...stickerAttachments,
       ...gifEmbeds.map((entry) => entry.attachment),
+      ...embedAttachments,
       ...emojiAttachments,
     ]);
     return { attachments: combined, consumedUrls };
