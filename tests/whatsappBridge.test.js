@@ -357,6 +357,71 @@ test('Discord delete/edit/reaction events send the expected WhatsApp actions', a
   }
 });
 
+test('Discord to WhatsApp sends include broadcast mode for broadcast chats', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  try {
+    state.lastMessages['dc-broadcast-edit'] = 'wa-broadcast-msg';
+    state.lastMessages['dc-broadcast-react'] = 'wa-broadcast-msg';
+
+    harness.fakeClient.ev.emit('discordMessage', {
+      jid: '12345678@broadcast',
+      message: {
+        id: 'dc-broadcast-message',
+        content: 'broadcast text',
+        cleanContent: 'broadcast text',
+        webhookId: null,
+        author: { username: 'BridgeUser' },
+        member: { displayName: 'BridgeUser' },
+        channel: { send: async () => {} },
+        attachments: new Map(),
+        stickers: new Map(),
+        embeds: [],
+        mentions: { users: new Map(), members: new Map(), roles: new Map() },
+      },
+    });
+    await delay(0);
+    assert.equal(harness.fakeClient.sendCalls[0]?.options?.broadcast, true);
+
+    harness.fakeClient.ev.emit('discordEdit', {
+      jid: '12345678@broadcast',
+      message: {
+        id: 'dc-broadcast-edit',
+        cleanContent: 'edited',
+        content: 'edited',
+        webhookId: null,
+        author: { username: 'You' },
+        channel: { send: async () => {} },
+      },
+    });
+    await delay(0);
+    assert.equal(harness.fakeClient.sendCalls[1]?.options?.broadcast, true);
+
+    harness.fakeClient.ev.emit('discordReaction', {
+      jid: '12345678@broadcast',
+      removed: false,
+      reaction: {
+        emoji: { name: '🔥' },
+        message: {
+          id: 'dc-broadcast-react',
+          webhookId: null,
+          author: { username: 'You' },
+        },
+      },
+    });
+    await delay(0);
+    assert.equal(harness.fakeClient.sendCalls[2]?.options?.broadcast, true);
+
+    harness.fakeClient.ev.emit('discordDelete', {
+      jid: '12345678@broadcast',
+      id: 'wa-broadcast-msg',
+    });
+    await delay(0);
+    assert.equal(harness.fakeClient.sendCalls[3]?.options?.broadcast, true);
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test('Discord raw user and role mentions are converted before forwarding to WhatsApp', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
   try {

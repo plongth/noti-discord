@@ -129,6 +129,11 @@ const getStoredMessageWithJidFallback = async (key = {}) => {
 };
 
 const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const isBroadcastJid = (jid = '') => typeof jid === 'string' && jid.endsWith('@broadcast');
+const buildSendOptionsForJid = (jid) => {
+    const normalizedJid = utils.whatsapp.formatJid(jid) || jid;
+    return isBroadcastJid(normalizedJid) ? { broadcast: true } : {};
+};
 
 const toMentionLabel = (value) => {
     if (typeof value !== 'string') return null;
@@ -1009,7 +1014,7 @@ const connectToWhatsApp = async (retry = 1) => {
         }
 
         const isForwardedFromDiscord = Boolean(forwardContext?.isForwarded);
-        const options = {};
+        const options = buildSendOptionsForJid(jid);
         const forwardSnapshot = isForwardedFromDiscord && message?.wa2dcForwardSnapshot
             ? message.wa2dcForwardSnapshot
             : null;
@@ -1253,6 +1258,7 @@ const connectToWhatsApp = async (retry = 1) => {
         });
         text = mentionResolution.text;
         const editMentions = mentionResolution.mentionJids;
+        const editOptions = buildSendOptionsForJid(jid);
         try {
             const editMsg = await client.sendMessage(
                 jid,
@@ -1260,7 +1266,8 @@ const connectToWhatsApp = async (retry = 1) => {
                     text,
                     edit: key,
                     ...(editMentions.length ? { mentions: editMentions } : {}),
-                }
+                },
+                editOptions,
             );
             state.sentMessages.add(editMsg.key.id);
         } catch (err) {
@@ -1284,13 +1291,14 @@ const connectToWhatsApp = async (retry = 1) => {
             key.participant = utils.whatsapp.toJid(reaction.message.author.username);
         }
 
+        const reactionOptions = buildSendOptionsForJid(jid);
         try {
             const reactionMsg = await client.sendMessage(jid, {
                 react: {
                     text: removed ? '' : reaction.emoji.name,
                     key,
                 },
-            });
+            }, reactionOptions);
             const messageId = reactionMsg.key.id;
             state.lastMessages[messageId] = true;
             state.sentMessages.add(messageId);
@@ -1305,6 +1313,7 @@ const connectToWhatsApp = async (retry = 1) => {
             return;
         }
 
+        const deleteOptions = buildSendOptionsForJid(jid);
         try {
             await client.sendMessage(jid, {
                 delete: {
@@ -1312,7 +1321,7 @@ const connectToWhatsApp = async (retry = 1) => {
                     id,
                     fromMe: true,
                 },
-            });
+            }, deleteOptions);
         } catch (err) {
             state.logger?.error(err);
         }
