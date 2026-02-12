@@ -363,10 +363,10 @@ const resolveForwardSourceFromQuote = async (message) => {
       .filter(Boolean),
   )];
   for (const channelId of channelIds) {
-    
+
     const channel = await utils.discord.getChannel(channelId);
     if (!channel?.messages?.fetch) continue;
-    
+
     const found = await channel.messages.fetch(mappedDiscordId).catch(() => null);
     if (!found) continue;
     cacheDiscordMessageLocation(found, channelId);
@@ -434,7 +434,7 @@ class CommandResponder {
   async sendPartitioned(text) {
     const parts = utils.discord.partitionText(text || '');
     for (const part of parts) {
-      
+
       await this.send(part);
     }
   }
@@ -635,7 +635,7 @@ const sendWhatsappMessage = async (message, mediaFiles = [], messageIds = []) =>
     }, message.channelJid);
     cacheDiscordMessageLocation(dcMessage, webhook.channelId);
     if (message.id != null) {
-      
+
       state.lastMessages[dcMessage.id] = message.id;
     }
     return;
@@ -644,7 +644,7 @@ const sendWhatsappMessage = async (message, mediaFiles = [], messageIds = []) =>
   if (msgContent || files.length) {
     msgContent = utils.discord.partitionText(msgContent);
     while (msgContent.length > 1) {
-      
+
       await utils.discord.safeWebhookSend(webhook, {
         content: msgContent.shift(),
         username: message.name,
@@ -669,7 +669,7 @@ const sendWhatsappMessage = async (message, mediaFiles = [], messageIds = []) =>
 
     let lastDcMessage;
     for (let i = 0; i < fileChunks.length; i += 1) {
-      
+
       const sendArgs = {
         content: i === 0 ? (msgContent.shift() || null) : null,
         username: message.name,
@@ -682,17 +682,17 @@ const sendWhatsappMessage = async (message, mediaFiles = [], messageIds = []) =>
       cacheDiscordMessageLocation(lastDcMessage, webhook.channelId);
 
       if (i === 0 && lastDcMessage.channel.type === 'GUILD_NEWS' && state.settings.Publish) {
-        
+
         await lastDcMessage.crosspost();
       }
 
       if (message.id != null) {
         for (const waId of idChunks[i] || []) {
-          
+
           state.lastMessages[waId] = lastDcMessage.id;
         }
         if (i === 0) {
-          
+
           state.lastMessages[lastDcMessage.id] = message.id;
         }
       }
@@ -701,7 +701,7 @@ const sendWhatsappMessage = async (message, mediaFiles = [], messageIds = []) =>
     if (largeFiles.length) {
       const placeholders = [];
       for (const file of largeFiles) {
-        
+
         const placeholder = await utils.discord.safeWebhookSend(webhook, {
           content: `WA2DC: downloading "${file?.name || 'attachment'}"...`,
           username: message.name,
@@ -717,7 +717,7 @@ const sendWhatsappMessage = async (message, mediaFiles = [], messageIds = []) =>
           const placeholder = placeholders[i];
           let downloadMessage;
           try {
-            
+
             downloadMessage = await utils.discord.downloadLargeFile(file);
           } catch (err) {
             state.logger?.error({ err }, 'Failed to download large WhatsApp attachment for local serving');
@@ -725,7 +725,7 @@ const sendWhatsappMessage = async (message, mediaFiles = [], messageIds = []) =>
           }
           const content = String(downloadMessage || '').replace(/^\n+/, '').trim() || 'WA2DC Attention: Download completed, but no message was generated.';
           try {
-            
+
             await utils.discord.safeWebhookEdit(webhook, placeholder.id, { content }, message.channelJid);
           } catch (err) {
             state.logger?.warn?.({ err }, 'Failed to update local-download placeholder message');
@@ -1013,7 +1013,7 @@ client.on('whatsappCall', async ({ call, jid }) => {
   if ((state.settings.oneWay >> 0 & 1) === 0) {
     return;
   }
-  
+
   const webhook = await utils.discord.getOrCreateChannel(jid);
 
   const name = utils.whatsapp.jidToName(jid);
@@ -1134,7 +1134,7 @@ const commandHandlers = {
         return;
       }
 
-      
+
       const jid = utils.whatsapp.toJid(contact);
       if (!jid) {
         await ctx.reply(`Couldn't find \`${contact}\`.`);
@@ -1560,7 +1560,7 @@ const commandHandlers = {
           : 'No results were found.',
       );
       while (message.length !== 0) {
-        
+
         await ctx.reply(message.shift());
       }
     },

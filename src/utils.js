@@ -63,8 +63,8 @@ const MIME_BY_EXTENSION = {
 const LINK_PREVIEW_FETCH_TIMEOUT_MS = 3000;
 const LINK_PREVIEW_MAX_REDIRECTS = 5;
 const LINK_PREVIEW_FETCH_OPTS = { timeout: LINK_PREVIEW_FETCH_TIMEOUT_MS };
-const LINK_PREVIEW_MAX_BYTES = 1024 * 1024; 
-const LINK_PREVIEW_THUMB_MAX_BYTES = 8 * 1024 * 1024; 
+const LINK_PREVIEW_MAX_BYTES = 1024 * 1024;
+const LINK_PREVIEW_THUMB_MAX_BYTES = 8 * 1024 * 1024;
 const EXPLICIT_URL_REGEX = /<?https?:\/\/[^\s>]+>?/i;
 const BARE_URL_REGEX = /(?:^|[\s<])((?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[\w\-./?%&=+#]*)?)/i;
 const TRAILING_PUNCTUATION_REGEX = /[)\],.;!?]+$/;
@@ -195,12 +195,12 @@ const isPrivateIPv4Int = (value) => {
   const first = unsigned >>> 24;
   const second = (unsigned >>> 16) & 0xff;
 
-  if (first === 10) return true; 
-  if (first === 127) return true; 
-  if (first === 169 && second === 254) return true; 
-  if (first === 172 && second >= 16 && second <= 31) return true; 
-  if (first === 192 && second === 168) return true; 
-  if (first === 0) return true; 
+  if (first === 10) return true;
+  if (first === 127) return true;
+  if (first === 169 && second === 254) return true;
+  if (first === 172 && second >= 16 && second <= 31) return true;
+  if (first === 192 && second === 168) return true;
+  if (first === 0) return true;
   return false;
 };
 
@@ -212,16 +212,16 @@ const isBlockedIp = (address = '') => {
   }
   if (ipVersion === 6) {
     const normalized = address.toLowerCase();
-    if (normalized === '::' || normalized === '::1') return true; 
+    if (normalized === '::' || normalized === '::1') return true;
     if (normalized.startsWith('::ffff:')) {
       const tail = normalized.slice('::ffff:'.length);
       if (net.isIP(tail) === 4) return isBlockedIp(tail);
     }
-    
+
     if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true;
-    
+
     if (normalized.startsWith('fe8') || normalized.startsWith('fe9') || normalized.startsWith('fea') || normalized.startsWith('feb')) return true;
-    
+
     if (normalized.startsWith('ff')) return true;
     return false;
   }
@@ -542,7 +542,7 @@ const sanitizePathSegment = (name = '', fallback = 'file') => {
   const base = path.basename(raw);
   let normalized = base.replace(/[^\w.-]+/g, '-').replace(/-+/g, '-').slice(0, 128);
 
-  
+
   normalized = normalized.replace(/[. ]+$/g, '');
   const parsed = path.parse(normalized);
   if (parsed.name && isWindowsReservedBasename(parsed.name)) {
@@ -1034,8 +1034,8 @@ const updater = {
   currentExeName: process.argv0.split(/[/\\]/).pop(),
 
   get supportsSignedSelfUpdate() {
-    
-    
+
+
     return true;
   },
 
@@ -1570,7 +1570,7 @@ const discord = {
     if (!channel || !text) return;
     const parts = this.partitionText(text);
     for (const part of parts) {
-      
+
       await channel.send(part);
     }
   },
@@ -1842,7 +1842,7 @@ const discord = {
     if (args && typeof args === 'object' && Object.prototype.hasOwnProperty.call(args, 'username')) {
       const normalized = normalizeWebhookUsername(args.username);
       if (normalized == null) {
-        
+
         args = { ...args };
         delete args.username;
       } else if (normalized !== args.username) {
@@ -2098,7 +2098,7 @@ const discord = {
       return await webhook.editMessage(messageId, args);
     } catch (err) {
       if (err.code === 10008 && err.message.includes('Unknown Message')) {
-        
+
         return null;
       }
       if (err.code === 10015 && err.message.includes('Unknown Webhook')) {
@@ -2126,7 +2126,7 @@ const discord = {
       return await webhook.deleteMessage(messageId);
     } catch (err) {
       if (err.code === 10008 && err.message.includes('Unknown Message')) {
-        
+
         return null;
       }
       if (err.code === 10015 && err.message.includes('Unknown Webhook')) {
@@ -2471,7 +2471,7 @@ const discord = {
           remaining.push(file);
           continue;
         }
-        
+
         const deleted = await deleteFile(file);
         if (!deleted) {
           remaining.push(file);
@@ -2488,7 +2488,7 @@ const discord = {
           remaining.push(file);
           continue;
         }
-        
+
         const deleted = await deleteFile(file);
         if (deleted) {
           total -= file.size;
@@ -2519,7 +2519,7 @@ const discord = {
             remaining.push(file);
             continue;
           }
-          
+
           const deleted = await deleteFile(file);
           if (deleted) {
             freeBytes += file.size;
@@ -2552,7 +2552,7 @@ const discord = {
         await fs.promises.writeFile(absPath, file.attachment, { mode: 0o600 });
       }
     } catch (err) {
-      
+
       const canRetry = !!file.downloadCtx;
       if (canRetry) {
         state.logger?.warn({ err, file: file.name }, 'Retrying WhatsApp media download after failure');
@@ -2786,7 +2786,7 @@ const whatsapp = {
       const digits = trimmed.replace(/\D/g, '');
       if (digits) return this.formatJid(`${digits}@s.whatsapp.net`);
     }
-    
+
     if (!isNaN(trimmed)) { return this.formatJid(`${trimmed}@s.whatsapp.net`); }
     if (trimmed.includes('@')) {
       return this.formatJid(trimmed);
@@ -2856,7 +2856,7 @@ const whatsapp = {
       }
     }
 
-    
+
     const phoneMentionRegex = /@(\+?\d{7,15})(?=\W|$)/g;
     let match;
     while ((match = phoneMentionRegex.exec(cleaned)) !== null) {
@@ -2889,7 +2889,7 @@ const whatsapp = {
 
     const store = state.waClient?.signalRepository?.lidMapping;
 
-    
+
     if (this.isPhoneJid(formatted)) return formatted;
     if (this.isLidJid(formatted) && store && typeof store.getPNForLID === 'function') {
       try {
@@ -3223,7 +3223,7 @@ const whatsapp = {
       }
       return {
         name: this.getFilename(msg, nMsgType),
-        
+
         attachment: await downloadMediaMessage(rawMsg, 'stream', {}, {
           logger: state.logger,
           reuploadRequest: state.waClient.updateMediaMessage,
@@ -3234,8 +3234,8 @@ const whatsapp = {
       };
     } catch (err) {
       if (err?.message?.includes('Unrecognised filter type') || err?.message?.includes('Unrecognized filter type')) {
-        
-        
+
+
         state.logger?.warn('Skipped sending attachment due to an invalid PNG file');
       } else {
         state.logger?.error(err);
@@ -3411,8 +3411,8 @@ const whatsapp = {
       const jids = [formatted, primary, alternate, resolved].filter(Boolean);
       if (found) return { discordUserId: found.discordUserId, jids: [...jids, ...found.keys] };
 
-      
-      
+
+
       const mentionName = getStoredContactName(formatted)
         || getStoredContactName(resolvedCandidate)
         || getStoredContactName(primary)
@@ -3697,7 +3697,7 @@ const whatsapp = {
     const files = await fs.promises.readdir(dir).catch(() => []);
     for (const file of files) {
       const fullPath = path.join(dir, file);
-      
+
       await fs.promises.rm(fullPath, { recursive: true, force: true }).catch(() => {});
     }
   }

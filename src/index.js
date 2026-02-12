@@ -143,7 +143,7 @@ if (!globalThis.crypto) {
   }
 
   if (!isSmokeTest) {
-    
+
     try {
       const crashFile = 'crash-report.txt';
       const queued = await fs.promises.readFile(crashFile, 'utf8');

@@ -55,13 +55,13 @@ const state = {
   startTime: 0,
   logger: null,
   lastMessages: null,
-  
+
   sentMessages: new Set(),
-  
+
   reactions: {},
-  
+
   sentReactions: new Set(),
-  
+
   sentPins: new Set(),
   goccRuns: {},
   updateInfo: null,

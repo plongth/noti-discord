@@ -11,7 +11,7 @@ test('Group refresh scheduler debounces per JID and can be cleared', async () =>
   });
 
   scheduler.schedule('abc');
-  scheduler.schedule('abc'); 
+  scheduler.schedule('abc');
   scheduler.schedule('def');
   assert.equal(calls.length, 0);
 
@@ -20,7 +20,7 @@ test('Group refresh scheduler debounces per JID and can be cleared', async () =>
 
   calls = [];
   scheduler.schedule('xyz');
-  scheduler.clearAll(); 
+  scheduler.clearAll();
   await delay(30);
   assert.equal(calls.length, 0);
 });

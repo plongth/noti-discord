@@ -431,7 +431,7 @@ const refreshGroupMetadata = async (client, groupId) => {
         const level = isRateLimit ? 'debug' : 'warn';
         state.logger?.[level]?.({ err, groupId: normalizedId }, 'Failed to refresh group metadata');
         if (isRateLimit) {
-            
+
             groupRefreshLastRun.set(normalizedId, now + minGapMs);
         }
         return null;
@@ -493,12 +493,12 @@ const ensureSignalStoreSupport = async (keyStore) => {
     const requiredKeys = ['tctoken', 'lid-mapping', 'device-list', 'device-index'];
     for (const key of requiredKeys) {
         try {
-            
-            
-            
+
+
+
             const existing = await keyStore.get(key, []);
             if (existing == null) {
-                
+
                 await keyStore.set({ [key]: {} });
             }
         } catch (err) {
@@ -519,7 +519,7 @@ const migrateLegacyChats = async (client) => {
         for (const lidJid of lidJids) {
             let pnJid = mappings?.[lidJid];
             if (!pnJid && typeof store.getPNForLID === 'function') {
-                
+
                 pnJid = await store.getPNForLID(lidJid);
             }
             const formattedPn = utils.whatsapp.formatJid(pnJid);
@@ -566,7 +566,7 @@ const connectToWhatsApp = async (retry = 1) => {
         getMessage: async (key) => {
             const stored = await getStoredMessageWithJidFallback({ ...key, remoteJid: utils.whatsapp.formatJid(key?.remoteJid) });
             if (!stored) return null;
-            
+
             return stored.message || stored;
         },
         browser: ["Firefox (Linux)", "", ""]
@@ -614,7 +614,7 @@ const connectToWhatsApp = async (retry = 1) => {
                 return;
             } else if (connection === 'open') {
                 state.waClient = client;
-                
+
                 retry = 1;
                 await sendControlMessage('WhatsApp connection successfully opened!');
 
@@ -1009,9 +1009,9 @@ const connectToWhatsApp = async (retry = 1) => {
             text = text ? `${text}\n${embedText}` : embedText;
         }
         if (!isForwardedFromDiscord && message.reference) {
-            
-            
-            
+
+
+
             text = text.replace(/^(<@!?\d+>|@\S+)\s*/, '');
         }
         if (text && typeof text.normalize === 'function') {
@@ -1189,8 +1189,8 @@ const connectToWhatsApp = async (retry = 1) => {
             text = text ? `${text}\n${embedText}` : embedText;
         }
         if (message.reference) {
-            
-            
+
+
             text = text.replace(/^(<@!?\d+>|@\S+)\s*/, '');
         }
         if (text && typeof text.normalize === 'function') {
