@@ -824,6 +824,115 @@ test('WhatsApp forwarded message links source channel when quote sourceJid is br
   }
 });
 
+test('WhatsApp forwarded message links source channel when quote sourceJid resolves from LID to PN', async () => {
+  const originalDiscordUtils = {
+    getGuild: utils.discord.getGuild,
+    getControlChannel: utils.discord.getControlChannel,
+    getOrCreateChannel: utils.discord.getOrCreateChannel,
+    safeWebhookSend: utils.discord.safeWebhookSend,
+  };
+  const originalSettings = {
+    Token: state.settings.Token,
+    GuildID: state.settings.GuildID,
+    oneWay: state.settings.oneWay,
+  };
+  const originalChats = { ...state.chats };
+  const originalLastMessages = state.lastMessages;
+  const originalDcClient = state.dcClient;
+  const originalWaClient = state.waClient;
+
+  try {
+    state.settings.Token = 'TEST_TOKEN';
+    state.settings.GuildID = 'guild';
+    state.settings.oneWay = 0b11;
+    state.lastMessages = {};
+    restoreObject(state.chats, {
+      '14155550123@s.whatsapp.net': { channelId: 'source-channel', id: 'wh-source', token: 'tok', type: 0 },
+      'target@s.whatsapp.net': { channelId: 'target-channel', id: 'wh-target', token: 'tok', type: 0 },
+    });
+    state.waClient = {
+      signalRepository: {
+        lidMapping: {
+          getPNForLID: async (jid) => (jid === '161040050426060@lid' ? '14155550123@s.whatsapp.net' : null),
+        },
+      },
+    };
+
+    utils.discord.getGuild = async () => ({ commands: { set: async () => {} } });
+    utils.discord.getControlChannel = async () => ({ send: async () => {} });
+    utils.discord.getOrCreateChannel = async () => ({
+      id: 'wh-1',
+      token: 'token',
+      channel: { type: 'GUILD_TEXT' },
+      channelId: 'target-channel',
+    });
+
+    const sent = [];
+    utils.discord.safeWebhookSend = async (_webhook, args) => {
+      sent.push(args);
+      return {
+        id: `dc-${sent.length}`,
+        channel: { type: 'GUILD_TEXT' },
+        channelId: 'target-channel',
+        guildId: 'guild',
+        url: `https://discord.com/channels/guild/target-channel/dc-${sent.length}`,
+      };
+    };
+
+    class FakeDiscordClient extends EventEmitter {
+      constructor() {
+        super();
+        this.user = { id: 'bot-1' };
+      }
+
+      async login() {
+        queueMicrotask(() => this.emit('ready'));
+        return this;
+      }
+    }
+
+    const fakeClient = new FakeDiscordClient();
+    setClientFactoryOverrides({ createDiscordClient: () => fakeClient });
+    const discordHandler = await importDiscordHandler('wa-forwarded-sourcejid-lid');
+    state.dcClient = await discordHandler.start();
+
+    fakeClient.emit('whatsappMessage', {
+      id: 'wa-forward-sourcejid-lid',
+      name: 'Bob',
+      content: 'forward body',
+      channelJid: 'target@s.whatsapp.net',
+      file: null,
+      quote: { id: 'wa-unknown', sourceJid: '161040050426060@lid' },
+      profilePic: null,
+      isGroup: false,
+      isForwarded: true,
+      isEdit: false,
+    });
+    await delay(0);
+
+    assert.equal(sent.length, 1);
+    const forwardedContent = sent[0]?.content || '';
+    assert.ok(forwardedContent.includes('Forwarded'));
+    assert.ok(forwardedContent.includes('Source: <#source-channel>'));
+    assert.equal(forwardedContent.includes('Jump:'), false);
+  } finally {
+    utils.discord.getGuild = originalDiscordUtils.getGuild;
+    utils.discord.getControlChannel = originalDiscordUtils.getControlChannel;
+    utils.discord.getOrCreateChannel = originalDiscordUtils.getOrCreateChannel;
+    utils.discord.safeWebhookSend = originalDiscordUtils.safeWebhookSend;
+
+    state.settings.Token = originalSettings.Token;
+    state.settings.GuildID = originalSettings.GuildID;
+    state.settings.oneWay = originalSettings.oneWay;
+    restoreObject(state.chats, originalChats);
+    state.lastMessages = originalLastMessages;
+    state.waClient = originalWaClient;
+
+    state.dcClient = originalDcClient;
+    resetClientFactoryOverrides();
+  }
+});
+
 test('Discord bot messages can be blocked from forwarding to WhatsApp', async () => {
   const originalDiscordUtils = {
     getGuild: utils.discord.getGuild,

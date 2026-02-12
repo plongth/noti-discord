@@ -272,26 +272,66 @@ const buildForwardContext = (message, rawContext = null) => {
   };
 };
 
+const collectSourceJidCandidates = async (sourceJid) => {
+  const addCandidate = (set, value) => {
+    const formatted = utils.whatsapp.formatJid(value);
+    if (!formatted) return;
+    set.add(formatted);
+    const [userPart, serverPart] = formatted.split('@');
+    if ((serverPart === 's.whatsapp.net' || serverPart === 'lid') && /^\d+$/.test(userPart)) {
+      set.add(`${userPart}@${serverPart}`);
+      set.add(`+${userPart}@${serverPart}`);
+    }
+  };
+
+  const candidates = new Set();
+  addCandidate(candidates, sourceJid);
+
+  if (typeof utils.whatsapp.hydrateJidPair === 'function') {
+    try {
+      const [primary, alternate] = await utils.whatsapp.hydrateJidPair(sourceJid, null);
+      addCandidate(candidates, primary);
+      addCandidate(candidates, alternate);
+    } catch (err) {
+      state.logger?.debug?.({ err }, 'Failed to hydrate forwarded source JID');
+    }
+  }
+
+  if (typeof utils.whatsapp.resolveKnownJid === 'function' && candidates.size) {
+    const resolved = utils.whatsapp.resolveKnownJid(...candidates);
+    addCandidate(candidates, resolved);
+  }
+
+  return [...candidates];
+};
+
+const resolveForwardSourceChannelId = async (sourceJid) => {
+  if (!sourceJid) return null;
+  const candidates = await collectSourceJidCandidates(sourceJid);
+  for (const candidate of candidates) {
+    const channelId = state.chats?.[candidate]?.channelId;
+    if (channelId) return channelId;
+  }
+  return null;
+};
+
 const resolveForwardSourceFromQuote = async (message) => {
-  const quotedWaId = message?.quote?.id;
-  const quotedSourceJid = utils.whatsapp.formatJid(message?.quote?.sourceJid);
+  const quotedWaId = typeof message?.quote?.id === 'string' ? message.quote.id.trim() : null;
+  const quotedSourceJid = message?.quote?.sourceJid || message?.quote?.remoteJid || null;
+  const sourceChannelId = await resolveForwardSourceChannelId(quotedSourceJid);
   if (!quotedWaId && !quotedSourceJid) return null;
 
-  const mappedDiscordId = quotedWaId ? state.lastMessages?.[quotedWaId] : null;
-  if (typeof mappedDiscordId !== 'string' || !mappedDiscordId) {
-    if (quotedSourceJid && state.chats?.[quotedSourceJid]?.channelId) {
-      return {
-        channelId: state.chats[quotedSourceJid].channelId,
-        url: null,
-      };
-    }
+  const mappedDiscordIdRaw = quotedWaId ? state.lastMessages?.[quotedWaId] : null;
+  const mappedDiscordId = mappedDiscordIdRaw == null ? '' : String(mappedDiscordIdRaw).trim();
+  if (!mappedDiscordId) {
+    if (sourceChannelId) return { channelId: sourceChannelId, url: null };
     return null;
   }
 
   const cached = discordMessageLocationCache.get(mappedDiscordId);
   if (cached) {
     return {
-      channelId: cached.channelId || null,
+      channelId: cached.channelId || sourceChannelId || null,
       url: cached.url || null,
     };
   }
@@ -312,7 +352,7 @@ const resolveForwardSourceFromQuote = async (message) => {
     const resolved = discordMessageLocationCache.get(mappedDiscordId);
     if (resolved) {
       return {
-        channelId: resolved.channelId || channelId,
+        channelId: resolved.channelId || sourceChannelId || channelId,
         url: resolved.url || null,
       };
     }
@@ -325,6 +365,8 @@ const resolveForwardSourceFromQuote = async (message) => {
       }),
     };
   }
+
+  if (sourceChannelId) return { channelId: sourceChannelId, url: null };
 
   return null;
 };

@@ -2862,12 +2862,23 @@ const whatsapp = {
       let mentionJid = await this.preferMentionJidForChat(preferred, chatJid);
       if (!mentionJid) continue;
 
-      const replacementToken = this.isPhoneJid(mentionJid)
-        ? `@${this.jidToPhone(mentionJid)}`
-        : `@${this.jidToName(mentionJid)}`;
+      const normalizedDisplayTokens = [...new Set(displayTokens
+        .map((token) => (typeof token === 'string' ? token.trim() : ''))
+        .filter(Boolean))];
+      const linkedContactName = this.jidToName(mentionJid);
+      const preferredDisplayName = (
+        linkedContactName
+        && linkedContactName !== 'Unknown'
+        && !this.isPhoneLike(linkedContactName)
+      )
+        ? linkedContactName
+        : (normalizedDisplayTokens[0] || null);
+      const replacementLabel = preferredDisplayName
+        || (this.isPhoneJid(mentionJid) ? this.jidToPhone(mentionJid) : this.jidToName(mentionJid));
+      const replacementToken = `@${String(replacementLabel || '').replace(/^@+/, '')}`;
 
       let replaced = false;
-      const candidates = [...new Set(displayTokens.map((t) => (typeof t === 'string' ? t.trim() : '')).filter(Boolean))];
+      const candidates = normalizedDisplayTokens;
 
       const rawCandidates = [...new Set(rawTokens.map((t) => (typeof t === 'string' ? t.trim() : '')).filter(Boolean))];
       for (const token of rawCandidates) {
@@ -2967,11 +2978,25 @@ const whatsapp = {
     if (this.isStatusBroadcast(rawMsg)) return false;
     return rawMsg?.key?.participant != null;
   },
-  isForwarded(msg) {
-    return msg?.contextInfo?.isForwarded;
+  isForwarded(msg, explicitContextInfo = null) {
+    const context = explicitContextInfo
+      || msg?.contextInfo
+      || msg?.messageContextInfo
+      || msg?.message?.messageContextInfo;
+    if (context?.isForwarded) return true;
+    if (!msg || typeof msg !== 'object') return false;
+    const nested = Object.values(msg).find((value) => value?.contextInfo?.isForwarded);
+    return Boolean(nested);
   },
-  isQuoted(msg) {
-    return msg?.contextInfo?.quotedMessage;
+  isQuoted(msg, explicitContextInfo = null) {
+    const context = explicitContextInfo
+      || msg?.contextInfo
+      || msg?.messageContextInfo
+      || msg?.message?.messageContextInfo;
+    if (context?.quotedMessage) return true;
+    if (!msg || typeof msg !== 'object') return false;
+    const nested = Object.values(msg).find((value) => value?.contextInfo?.quotedMessage);
+    return Boolean(nested);
   },
   async getQuote(rawMsg) {
     const msgType = this.getMessageType(rawMsg);
@@ -2979,7 +3004,7 @@ const whatsapp = {
 
     if (!msgType || !msg) return null;
 
-    const context = msg.contextInfo;
+    const context = msg?.contextInfo || rawMsg?.message?.messageContextInfo;
     if (!context) return null;
 
     const qMsg = context.quotedMessage;

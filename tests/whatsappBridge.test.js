@@ -81,11 +81,13 @@ const setupWhatsAppHarness = async ({
       toJid: (value) => value,
       deleteSession: async () => {},
       getSenderJid: async (raw) => raw.key.remoteJid,
-      getMentionedJids: () => [],
+      getMentionedJids: (...args) => originalWhatsappUtils.getMentionedJids(...args),
       convertDiscordFormatting: (text) => text,
       createQuoteMessage: async () => null,
       createDocumentContent: () => ({}),
       jidToName: (jid) => jid,
+      applyDiscordMentionLinks: (...args) => originalWhatsappUtils.applyDiscordMentionLinks(...args),
+      preferMentionJidForChat: (...args) => originalWhatsappUtils.preferMentionJidForChat(...args),
       updateContacts() {},
       generateLinkPreview: async () => null,
     };
@@ -520,6 +522,66 @@ test('Discord forwarded snapshots mirror content and attachments to WhatsApp', a
     assert.equal(harness.fakeClient.sendCalls[0]?.content?.document?.url, 'https://cdn.discordapp.com/attachments/file.png');
     assert.equal(harness.fakeClient.sendCalls[0]?.content?.caption, 'Forwarded\nsnapshot text');
   } finally {
+    harness.cleanup();
+  }
+});
+
+test('Discord forwarded snapshots resolve user and role mentions from raw tokens', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  const originalMentionLinks = { ...(state.settings.WhatsAppDiscordMentionLinks || {}) };
+  const originalContacts = snapshotObject(state.contacts);
+  try {
+    const linkedJid = '14155550123@s.whatsapp.net';
+    state.contacts[linkedJid] = 'Panos';
+    state.settings.WhatsAppDiscordMentionLinks = { [linkedJid]: '123456789012345678' };
+
+    harness.fakeClient.ev.emit('discordMessage', {
+      jid: 'jid@s.whatsapp.net',
+      forwardContext: { isForwarded: true, sourceChannelId: 'chan-a', sourceMessageId: 'm-1', sourceGuildId: 'guild-a' },
+      message: {
+        id: 'dc-forward-mention-snapshot',
+        content: '',
+        cleanContent: '',
+        webhookId: null,
+        author: { username: 'BridgeUser' },
+        member: { displayName: 'BridgeUser' },
+        channel: { send: async () => {} },
+        attachments: new Map(),
+        stickers: new Map(),
+        embeds: [],
+        mentions: { users: new Map(), members: new Map(), roles: new Map() },
+        wa2dcForwardSnapshot: {
+          content: 'Hi <@123456789012345678> and <@&987654321098765432>',
+          attachments: [],
+        },
+        client: {
+          users: {
+            fetch: async (id) => (id === '123456789012345678'
+              ? { id, username: 'panos-discord', globalName: 'Panos' }
+              : null),
+          },
+        },
+        guild: {
+          members: {
+            cache: new Map(),
+            fetch: async (id) => (id === '123456789012345678' ? { id, displayName: 'Panos' } : null),
+          },
+          roles: {
+            cache: new Map(),
+            fetch: async (id) => (id === '987654321098765432' ? { id, name: 'Moderators' } : null),
+          },
+        },
+      },
+    });
+
+    await delay(0);
+
+    assert.equal(harness.fakeClient.sendCalls.length, 1);
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, 'Forwarded\nHi @Panos and @Moderators');
+    assert.deepEqual(harness.fakeClient.sendCalls[0]?.content?.mentions, [linkedJid]);
+  } finally {
+    state.settings.WhatsAppDiscordMentionLinks = originalMentionLinks;
+    restoreObject(state.contacts, originalContacts);
     harness.cleanup();
   }
 });

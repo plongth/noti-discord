@@ -103,3 +103,50 @@ test('getQuote resolves LID quote authors via lidMapping when available', async 
     messageStore.cache.clear();
   }
 });
+
+test('getQuote falls back to messageContextInfo metadata for forwarded messages', async () => {
+  const originalWaClient = state.waClient;
+  const originalContacts = snapshotObject(state.contacts);
+
+  try {
+    restoreObject(state.contacts, {});
+    messageStore.cache.clear();
+
+    state.waClient = {
+      contacts: state.contacts,
+      user: { id: '0@s.whatsapp.net' },
+      signalRepository: {},
+    };
+
+    const quote = await utils.whatsapp.getQuote({
+      key: { remoteJid: 'target@s.whatsapp.net', fromMe: false },
+      message: {
+        conversation: 'Forwarded copy',
+        messageContextInfo: {
+          stanzaId: 'orig-123',
+          remoteJid: 'source@s.whatsapp.net',
+          participant: '14155550123@s.whatsapp.net',
+          placeholderKey: {
+            id: 'orig-123',
+            remoteJid: 'source@s.whatsapp.net',
+            participant: '14155550123@s.whatsapp.net',
+          },
+        },
+      },
+    });
+
+    assert.equal(quote?.id, 'orig-123');
+    assert.equal(quote?.sourceJid, 'source@s.whatsapp.net');
+    assert.equal(quote?.content, '');
+  } finally {
+    state.waClient = originalWaClient;
+    restoreObject(state.contacts, originalContacts);
+    messageStore.cache.clear();
+  }
+});
+
+test('isForwarded detects top-level messageContextInfo and nested contextInfo', () => {
+  assert.equal(utils.whatsapp.isForwarded({ messageContextInfo: { isForwarded: true } }), true);
+  assert.equal(utils.whatsapp.isForwarded({ extendedTextMessage: { contextInfo: { isForwarded: true } } }), true);
+  assert.equal(utils.whatsapp.isForwarded({ conversation: 'plain' }), false);
+});
