@@ -648,6 +648,70 @@ test('Discord newsletter sends use normalized JIDs and map server IDs', async ()
   }
 });
 
+test('Discord newsletter send maps server ids from pending upsert notifications', async () => {
+  const harness = await setupWhatsAppHarness({
+    oneWay: 0b11,
+    formatJid: (jid) => (typeof jid === 'string' ? jid.trim() : jid),
+  });
+  try {
+    messageStore.clear();
+    let outboundCounter = 0;
+    harness.fakeClient.sendMessage = async (jid, content, options) => {
+      harness.fakeClient.sendCalls.push({ jid, content, options });
+      outboundCounter += 1;
+      return {
+        key: {
+          id: `3EB0PENDING${outboundCounter.toString().padStart(2, '0')}ABCD1234EF`,
+          remoteJid: jid,
+        },
+      };
+    };
+
+    harness.fakeClient.ev.emit('discordMessage', {
+      jid: '1203630@newsletter',
+      message: {
+        id: 'dc-news-pending-map',
+        content: 'newsletter pending map text',
+        cleanContent: 'newsletter pending map text',
+        webhookId: null,
+        author: { username: 'BridgeUser' },
+        member: { displayName: 'BridgeUser' },
+        channel: { send: async () => {} },
+        attachments: new Map(),
+        stickers: new Map(),
+        embeds: [],
+        mentions: { users: new Map(), members: new Map(), roles: new Map() },
+      },
+    });
+    await delay(0);
+
+    const outboundId = state.lastMessages['dc-news-pending-map'];
+    assert.ok(outboundId?.startsWith('3EB0PENDING'));
+
+    harness.fakeClient.ev.emit('messages.upsert', {
+      type: 'notify',
+      messages: [{
+        key: {
+          id: '48902.1-1',
+          remoteJid: '1203630@newsletter',
+        },
+        message: {
+          conversation: 'newsletter pending map text',
+        },
+      }],
+    });
+    await delay(0);
+
+    assert.equal(harness.forwarded.messages.length, 0);
+    assert.equal(state.lastMessages['dc-news-pending-map'], '48902.1-1');
+    assert.equal(state.lastMessages['48902.1-1'], 'dc-news-pending-map');
+    assert.equal(state.lastMessages[outboundId], 'dc-news-pending-map');
+  } finally {
+    messageStore.clear();
+    harness.cleanup();
+  }
+});
+
 test('Discord to WhatsApp sends include broadcast mode for broadcast chats', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
   try {

@@ -2202,13 +2202,13 @@ const commandHandlers = {
         return;
       }
 
-      const name = metadata?.name
-        || metadata?.threadMetadata?.name
-        || metadata?.thread_metadata?.name
+      const name = parseNewsletterTextValue(metadata?.name)
+        || parseNewsletterTextValue(metadata?.threadMetadata?.name)
+        || parseNewsletterTextValue(metadata?.thread_metadata?.name)
         || utils.whatsapp.jidToName(jid);
-      const description = metadata?.description
-        || metadata?.threadMetadata?.description
-        || metadata?.thread_metadata?.description
+      const description = parseNewsletterTextValue(metadata?.description)
+        || parseNewsletterTextValue(metadata?.threadMetadata?.description)
+        || parseNewsletterTextValue(metadata?.thread_metadata?.description)
         || '';
       const viewerRole = metadata?.viewerMetadata?.role
         || metadata?.viewer_metadata?.role

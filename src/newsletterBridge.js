@@ -2,9 +2,13 @@ import state from './state.js';
 
 const NEWSLETTER_ACK_ERROR_TTL_MS = 30 * 1000;
 const DEFAULT_NEWSLETTER_ACK_WAIT_MS = 1200;
+const NEWSLETTER_PENDING_SEND_TTL_MS = 2 * 60 * 1000;
+const NEWSLETTER_PENDING_SEND_FALLBACK_WINDOW_MS = 20 * 1000;
+const NEWSLETTER_PENDING_SEND_MAX_PER_JID = 64;
 
 const newsletterAckErrors = new Map();
 const newsletterAckWaiters = new Map();
+const newsletterPendingSends = new Map();
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -29,15 +33,291 @@ const getNewsletterServerIdFromMessage = (message) => {
   const candidates = [
     message?.key?.server_id,
     message?.key?.serverId,
+    message?.key?.newsletterServerId,
+    message?.key?.newsletter_server_id,
     message?.messageServerID,
     message?.server_id,
     message?.serverId,
+    message?.newsletterServerId,
+    message?.newsletter_server_id,
+    message?.message?.newsletterServerId,
+    message?.message?.newsletter_server_id,
   ];
   for (const candidate of candidates) {
     const normalized = normalizeBridgeMessageId(candidate);
     if (normalized) return normalized;
   }
   return null;
+};
+
+const normalizeSignatureText = (value) => {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  return value.replace(/\s+/g, ' ').trim().slice(0, 512);
+};
+
+const buildOutgoingNewsletterContentShape = (content = {}) => {
+  if (!content || typeof content !== 'object') {
+    return null;
+  }
+  if (typeof content.text === 'string') {
+    return {
+      type: 'text',
+      text: normalizeSignatureText(content.text),
+    };
+  }
+  if (content.image) {
+    return {
+      type: 'image',
+      text: normalizeSignatureText(content.caption || ''),
+    };
+  }
+  if (content.video) {
+    return {
+      type: 'video',
+      text: normalizeSignatureText(content.caption || ''),
+    };
+  }
+  if (content.audio) {
+    return {
+      type: 'audio',
+      text: '',
+    };
+  }
+  if (content.document) {
+    return {
+      type: 'document',
+      text: normalizeSignatureText(content.caption || ''),
+    };
+  }
+  return null;
+};
+
+const unwrapIncomingMessage = (rawMessage = {}) => {
+  let message = rawMessage?.message || rawMessage;
+  let guard = 0;
+  while (message && guard < 5) {
+    guard += 1;
+    if (message.ephemeralMessage?.message) {
+      message = message.ephemeralMessage.message;
+      continue;
+    }
+    if (message.viewOnceMessage?.message) {
+      message = message.viewOnceMessage.message;
+      continue;
+    }
+    if (message.viewOnceMessageV2?.message) {
+      message = message.viewOnceMessageV2.message;
+      continue;
+    }
+    if (message.viewOnceMessageV2Extension?.message) {
+      message = message.viewOnceMessageV2Extension.message;
+      continue;
+    }
+    if (message.documentWithCaptionMessage?.message) {
+      message = message.documentWithCaptionMessage.message;
+      continue;
+    }
+    break;
+  }
+  return message || {};
+};
+
+const buildIncomingNewsletterMessageShape = (rawMessage = {}) => {
+  const message = unwrapIncomingMessage(rawMessage);
+  if (typeof message?.conversation === 'string') {
+    return {
+      type: 'text',
+      text: normalizeSignatureText(message.conversation),
+    };
+  }
+  if (typeof message?.extendedTextMessage?.text === 'string') {
+    return {
+      type: 'text',
+      text: normalizeSignatureText(message.extendedTextMessage.text),
+    };
+  }
+  if (message?.imageMessage) {
+    return {
+      type: 'image',
+      text: normalizeSignatureText(message.imageMessage.caption || ''),
+    };
+  }
+  if (message?.videoMessage) {
+    return {
+      type: 'video',
+      text: normalizeSignatureText(message.videoMessage.caption || ''),
+    };
+  }
+  if (message?.audioMessage) {
+    return {
+      type: 'audio',
+      text: '',
+    };
+  }
+  if (message?.documentMessage) {
+    return {
+      type: 'document',
+      text: normalizeSignatureText(message.documentMessage.caption || ''),
+    };
+  }
+  return null;
+};
+
+const prunePendingNewsletterSends = (jid = '') => {
+  const cutoff = Date.now() - NEWSLETTER_PENDING_SEND_TTL_MS;
+  const normalizedJid = normalizeBridgeMessageId(jid);
+  const keys = normalizedJid ? [normalizedJid] : [...newsletterPendingSends.keys()];
+  for (const key of keys) {
+    const existing = newsletterPendingSends.get(key);
+    if (!Array.isArray(existing) || !existing.length) {
+      newsletterPendingSends.delete(key);
+      continue;
+    }
+    const next = existing.filter((entry) => (
+      entry
+      && typeof entry === 'object'
+      && typeof entry.timestamp === 'number'
+      && entry.timestamp >= cutoff
+    ));
+    if (next.length) {
+      newsletterPendingSends.set(key, next);
+    } else {
+      newsletterPendingSends.delete(key);
+    }
+  }
+};
+
+const notePendingNewsletterSend = ({
+  jid,
+  discordMessageId,
+  outboundId = null,
+  content = null,
+} = {}) => {
+  const normalizedJid = normalizeBridgeMessageId(jid);
+  const normalizedDiscordMessageId = normalizeBridgeMessageId(discordMessageId);
+  const normalizedOutboundId = normalizeBridgeMessageId(outboundId);
+  if (!normalizedJid || !normalizedDiscordMessageId) {
+    return;
+  }
+  prunePendingNewsletterSends(normalizedJid);
+  const queue = newsletterPendingSends.get(normalizedJid) || [];
+  const shape = buildOutgoingNewsletterContentShape(content) || {};
+  queue.push({
+    discordMessageId: normalizedDiscordMessageId,
+    outboundId: normalizedOutboundId || null,
+    type: typeof shape.type === 'string' ? shape.type : '',
+    text: typeof shape.text === 'string' ? shape.text : '',
+    timestamp: Date.now(),
+  });
+  while (queue.length > NEWSLETTER_PENDING_SEND_MAX_PER_JID) {
+    queue.shift();
+  }
+  newsletterPendingSends.set(normalizedJid, queue);
+};
+
+const clearPendingNewsletterSends = ({
+  jid = null,
+  discordMessageId = null,
+  outboundId = null,
+} = {}) => {
+  const normalizedJid = normalizeBridgeMessageId(jid);
+  const normalizedDiscordMessageId = normalizeBridgeMessageId(discordMessageId);
+  const normalizedOutboundId = normalizeBridgeMessageId(outboundId);
+  const keys = normalizedJid ? [normalizedJid] : [...newsletterPendingSends.keys()];
+
+  for (const key of keys) {
+    const queue = newsletterPendingSends.get(key);
+    if (!Array.isArray(queue) || !queue.length) {
+      newsletterPendingSends.delete(key);
+      continue;
+    }
+    const next = queue.filter((entry) => {
+      if (!entry || typeof entry !== 'object') return false;
+      if (normalizedDiscordMessageId && entry.discordMessageId === normalizedDiscordMessageId) {
+        return false;
+      }
+      if (normalizedOutboundId && entry.outboundId === normalizedOutboundId) {
+        return false;
+      }
+      return true;
+    });
+    if (next.length) {
+      newsletterPendingSends.set(key, next);
+    } else {
+      newsletterPendingSends.delete(key);
+    }
+  }
+};
+
+const resolvePendingNewsletterSend = ({
+  jid,
+  serverId,
+  message = null,
+} = {}) => {
+  const normalizedJid = normalizeBridgeMessageId(jid);
+  const normalizedServerId = normalizeBridgeMessageId(serverId);
+  if (!normalizedJid || !normalizedServerId || !isLikelyNewsletterServerId(normalizedServerId)) {
+    return null;
+  }
+
+  prunePendingNewsletterSends(normalizedJid);
+  const queue = newsletterPendingSends.get(normalizedJid);
+  if (!Array.isArray(queue) || !queue.length) {
+    return null;
+  }
+
+  const incomingShape = buildIncomingNewsletterMessageShape(message) || {};
+  const now = Date.now();
+  const withinFallbackWindow = (entry) => (
+    typeof entry?.timestamp === 'number'
+    && now - entry.timestamp <= NEWSLETTER_PENDING_SEND_FALLBACK_WINDOW_MS
+  );
+
+  const findMatch = (predicate) => queue.findIndex((entry) => {
+    if (!entry || typeof entry !== 'object') return false;
+    return predicate(entry);
+  });
+
+  let index = -1;
+  if (incomingShape.type && incomingShape.text) {
+    index = findMatch((entry) => (
+      entry.type === incomingShape.type
+      && entry.text === incomingShape.text
+    ));
+  }
+  if (index < 0 && incomingShape.type) {
+    index = findMatch((entry) => (
+      entry.type === incomingShape.type
+      && withinFallbackWindow(entry)
+    ));
+  }
+  if (index < 0 && incomingShape.text) {
+    index = findMatch((entry) => (
+      entry.text === incomingShape.text
+      && withinFallbackWindow(entry)
+    ));
+  }
+  if (index < 0) {
+    index = findMatch((entry) => withinFallbackWindow(entry));
+  }
+
+  if (index < 0) {
+    return null;
+  }
+  const [matched] = queue.splice(index, 1);
+  if (queue.length) {
+    newsletterPendingSends.set(normalizedJid, queue);
+  } else {
+    newsletterPendingSends.delete(normalizedJid);
+  }
+
+  return {
+    discordMessageId: normalizeBridgeMessageId(matched?.discordMessageId),
+    outboundId: normalizeBridgeMessageId(matched?.outboundId),
+    type: matched?.type || '',
+  };
 };
 
 const resolveNewsletterServerIdForDiscordMessage = (
@@ -175,11 +455,14 @@ const getNewsletterAckError = (messageId) => {
 };
 
 export {
+  clearPendingNewsletterSends,
   getNewsletterAckError,
   getNewsletterServerIdFromMessage,
   isLikelyNewsletterServerId,
+  notePendingNewsletterSend,
   normalizeBridgeMessageId,
   noteNewsletterAckError,
+  resolvePendingNewsletterSend,
   resolveNewsletterServerIdForDiscordMessage,
   waitForNewsletterAckError,
   waitForNewsletterServerId,

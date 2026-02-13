@@ -19,10 +19,13 @@ import { createGroupRefreshScheduler } from './groupMetadataRefresh.js';
 import { getPollEncKey, getPollOptions } from './pollUtils.js';
 import { oneWayAllowsDiscordToWhatsApp } from './oneWay.js';
 import {
+    clearPendingNewsletterSends,
     getNewsletterAckError,
     getNewsletterServerIdFromMessage,
+    notePendingNewsletterSend,
     normalizeBridgeMessageId,
     noteNewsletterAckError,
+    resolvePendingNewsletterSend,
     waitForNewsletterAckError,
     waitForNewsletterServerId,
 } from './newsletterBridge.js';
@@ -336,6 +339,11 @@ const clearFailedNewsletterMapping = ({ discordMessageId, sentMessage }) => {
     if (!normalizedDiscordMessageId) return;
     const outboundId = normalizeBridgeMessageId(sentMessage?.key?.id);
     const serverId = normalizeBridgeMessageId(getNewsletterServerIdFromMessage(sentMessage));
+    clearPendingNewsletterSends({
+        jid: sentMessage?.key?.remoteJid,
+        discordMessageId: normalizedDiscordMessageId,
+        outboundId,
+    });
     const removeIfMatches = (key) => {
         if (!key) return;
         if (state.lastMessages[key] === normalizedDiscordMessageId) {
@@ -364,6 +372,10 @@ const mapNewsletterServerIdFromOutbound = ({ outboundId, serverId }) => {
     if (!discordMessageId) {
         return null;
     }
+    clearPendingNewsletterSends({
+        discordMessageId,
+        outboundId: normalizedOutboundId,
+    });
     state.lastMessages[discordMessageId] = normalizedServerId;
     state.lastMessages[normalizedServerId] = discordMessageId;
     state.sentMessages.add(normalizedServerId);
@@ -1174,6 +1186,31 @@ const connectToWhatsApp = async (retry = 1) => {
                 const serverId = normalizeBridgeMessageId(getNewsletterServerIdFromMessage(rawMessage));
                 const remoteJid = normalizeSendJid(rawMessage?.key?.remoteJid || rawMessage?.chatId || rawMessage?.attrs?.from);
                 const newsletterChat = isNewsletterJid(remoteJid);
+                if (newsletterChat) {
+                    const resolvedServerId = normalizeBridgeMessageId(serverId || messageId || outboundId);
+                    if (resolvedServerId) {
+                        const pending = resolvePendingNewsletterSend({
+                            jid: remoteJid,
+                            serverId: resolvedServerId,
+                            message: rawMessage,
+                        });
+                        if (pending?.discordMessageId) {
+                            state.lastMessages[pending.discordMessageId] = resolvedServerId;
+                            state.lastMessages[resolvedServerId] = pending.discordMessageId;
+                            if (pending.outboundId) {
+                                state.lastMessages[pending.outboundId] = pending.discordMessageId;
+                            }
+                            state.sentMessages.add(resolvedServerId);
+                            state.logger?.debug?.({
+                                jid: remoteJid,
+                                discordMessageId: pending.discordMessageId,
+                                serverId: resolvedServerId,
+                                outboundId: pending.outboundId || undefined,
+                                type: pending.type || undefined,
+                            }, 'Mapped newsletter server ID from pending outbound send');
+                        }
+                    }
+                }
                 const sentCandidates = [...new Set([messageId, outboundId, serverId].filter(Boolean))];
                 if (sentCandidates.some((id) => state.sentMessages.has(id))) {
                     if (newsletterChat) {
@@ -1725,6 +1762,14 @@ const connectToWhatsApp = async (retry = 1) => {
                 sentMessage,
                 isNewsletter: newsletterChat,
             });
+            if (newsletterChat) {
+                notePendingNewsletterSend({
+                    jid: targetJid,
+                    discordMessageId: message.id,
+                    outboundId: sentMessage?.key?.id,
+                    content,
+                });
+            }
             storeMessage(sentMessage);
             const shouldTrackNewsletterAck = newsletterChat && (useNewsletterSpecialFlow || forceNewsletterAck);
             const notifyNewsletterAckFailure = async (ackErrorCode) => {

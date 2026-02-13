@@ -3433,9 +3433,15 @@ const whatsapp = {
     return rawMsg?.message?.editedMessage?.message?.protocolMessage?.key?.id
       || rawMsg?.key?.server_id
       || rawMsg?.key?.serverId
+      || rawMsg?.key?.newsletterServerId
+      || rawMsg?.key?.newsletter_server_id
       || rawMsg?.messageServerID
       || rawMsg?.server_id
       || rawMsg?.serverId
+      || rawMsg?.newsletterServerId
+      || rawMsg?.newsletter_server_id
+      || rawMsg?.message?.newsletterServerId
+      || rawMsg?.message?.newsletter_server_id
       || rawMsg?.key?.id
       || rawMsg?.id;
   },
