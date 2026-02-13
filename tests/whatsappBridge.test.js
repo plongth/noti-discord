@@ -26,6 +26,7 @@ const setupWhatsAppHarness = async ({
   inWhitelist = () => true,
   sentAfterStart = () => true,
   getMessageType = () => 'conversation',
+  formatJid = (jid) => jid,
 } = {}) => {
   const originalLogger = state.logger;
   const originalOneWay = state.settings.oneWay;
@@ -75,7 +76,7 @@ const setupWhatsAppHarness = async ({
       isGroup: () => false,
       isForwarded: () => false,
       getTimestamp: () => Date.now(),
-      formatJid: (jid) => jid,
+      formatJid: (...args) => formatJid(...args),
       migrateLegacyJid: () => {},
       isLidJid: () => true,
       toJid: (value) => value,
@@ -108,6 +109,7 @@ const setupWhatsAppHarness = async ({
       constructor() {
         this.ev = new EventEmitter();
         this.sendCalls = [];
+        this.newsletterReactionCalls = [];
         this._sendCounter = 0;
         this.contacts = {};
         this.signalRepository = {};
@@ -117,7 +119,15 @@ const setupWhatsAppHarness = async ({
       async sendMessage(jid, content, options) {
         this.sendCalls.push({ jid, content, options });
         this._sendCounter += 1;
-        return { key: { id: `sent-${this._sendCounter}`, remoteJid: jid } };
+        const key = { id: `sent-${this._sendCounter}`, remoteJid: jid };
+        if (typeof jid === 'string' && jid.endsWith('@newsletter')) {
+          key.server_id = `server-${this._sendCounter}`;
+        }
+        return { key };
+      }
+
+      async newsletterReactMessage(jid, serverId, reaction) {
+        this.newsletterReactionCalls.push({ jid, serverId, reaction });
       }
 
       async groupFetchAllParticipating() {
@@ -352,6 +362,89 @@ test('Discord delete/edit/reaction events send the expected WhatsApp actions', a
     await delay(0);
     assert.equal(harness.fakeClient.sendCalls[0].content.react.key.id, 'wa-react-target');
     assert.equal(state.sentReactions.has('wa-react-target'), true);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('Discord reactions in newsletter chats use newsletter-specific API', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  try {
+    state.lastMessages['dc-news-react'] = 'newsletter-server-id-1';
+
+    harness.fakeClient.ev.emit('discordReaction', {
+      jid: '1203630@newsletter',
+      removed: false,
+      reaction: {
+        emoji: { name: '🔥' },
+        message: {
+          id: 'dc-news-react',
+          webhookId: null,
+          author: { username: 'You' },
+        },
+      },
+    });
+
+    await delay(0);
+
+    assert.equal(harness.fakeClient.newsletterReactionCalls.length, 1);
+    assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.jid, '1203630@newsletter');
+    assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.serverId, 'newsletter-server-id-1');
+    assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.reaction, '🔥');
+    assert.equal(harness.fakeClient.sendCalls.length, 0);
+    assert.equal(state.sentReactions.has('newsletter-server-id-1'), true);
+
+    harness.fakeClient.ev.emit('discordReaction', {
+      jid: '1203630@newsletter',
+      removed: true,
+      reaction: {
+        emoji: { name: '🔥' },
+        message: {
+          id: 'dc-news-react',
+          webhookId: null,
+          author: { username: 'You' },
+        },
+      },
+    });
+
+    await delay(0);
+
+    assert.equal(harness.fakeClient.newsletterReactionCalls.length, 2);
+    assert.equal(harness.fakeClient.newsletterReactionCalls[1]?.reaction, undefined);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('Discord newsletter sends use normalized JIDs and map server IDs', async () => {
+  const harness = await setupWhatsAppHarness({
+    oneWay: 0b11,
+    formatJid: (jid) => (typeof jid === 'string' ? jid.trim() : jid),
+  });
+  try {
+    harness.fakeClient.ev.emit('discordMessage', {
+      jid: '1203630@newsletter   ',
+      message: {
+        id: 'dc-news-send',
+        content: 'newsletter publish text',
+        cleanContent: 'newsletter publish text',
+        webhookId: null,
+        author: { username: 'BridgeUser' },
+        member: { displayName: 'BridgeUser' },
+        channel: { send: async () => {} },
+        attachments: new Map(),
+        stickers: new Map(),
+        embeds: [],
+        mentions: { users: new Map(), members: new Map(), roles: new Map() },
+      },
+    });
+
+    await delay(0);
+
+    assert.equal(harness.fakeClient.sendCalls.length, 1);
+    assert.equal(harness.fakeClient.sendCalls[0]?.jid, '1203630@newsletter');
+    assert.equal(state.lastMessages['dc-news-send'], 'server-1');
+    assert.equal(state.lastMessages['server-1'], 'dc-news-send');
   } finally {
     harness.cleanup();
   }

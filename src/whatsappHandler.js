@@ -131,9 +131,42 @@ const getStoredMessageWithJidFallback = async (key = {}) => {
 const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const isBroadcastJid = (jid = '') => typeof jid === 'string' && jid.endsWith('@broadcast');
 const isNewsletterJid = (jid = '') => typeof jid === 'string' && jid.endsWith('@newsletter');
+const normalizeSendJid = (jid) => utils.whatsapp.formatJid(jid) || jid;
 const buildSendOptionsForJid = (jid) => {
-    const normalizedJid = utils.whatsapp.formatJid(jid) || jid;
+    const normalizedJid = normalizeSendJid(jid);
     return isBroadcastJid(normalizedJid) ? { broadcast: true } : {};
+};
+const getNewsletterServerIdFromMessage = (message) => {
+    const candidates = [
+        message?.key?.server_id,
+        message?.key?.serverId,
+        message?.messageServerID,
+        message?.server_id,
+        message?.serverId,
+    ];
+    for (const candidate of candidates) {
+        const normalized = typeof candidate === 'string' ? candidate.trim() : String(candidate || '').trim();
+        if (normalized) return normalized;
+    }
+    return null;
+};
+const mapDiscordMessageToWhatsAppMessage = ({ discordMessageId, sentMessage, isNewsletter = false }) => {
+    const outboundIdRaw = sentMessage?.key?.id;
+    const outboundId = typeof outboundIdRaw === 'string' ? outboundIdRaw.trim() : String(outboundIdRaw || '').trim();
+    const serverId = isNewsletter ? getNewsletterServerIdFromMessage(sentMessage) : null;
+    const preferredId = serverId || outboundId || null;
+    if (!discordMessageId || !preferredId) return;
+
+    state.lastMessages[discordMessageId] = preferredId;
+    state.lastMessages[preferredId] = discordMessageId;
+
+    if (outboundId) {
+        state.lastMessages[outboundId] = discordMessageId;
+        state.sentMessages.add(outboundId);
+    }
+    if (serverId && serverId !== outboundId) {
+        state.sentMessages.add(serverId);
+    }
 };
 
 const toMentionLabel = (value) => {
@@ -1014,17 +1047,17 @@ const connectToWhatsApp = async (retry = 1) => {
             return;
         }
 
-        const normalizedJid = utils.whatsapp.formatJid(jid) || jid;
-        const isNewsletterChat = isNewsletterJid(normalizedJid);
+        const targetJid = normalizeSendJid(jid);
+        const isNewsletterChat = isNewsletterJid(targetJid);
         const isForwardedFromDiscord = Boolean(forwardContext?.isForwarded);
-        const options = buildSendOptionsForJid(jid);
+        const options = buildSendOptionsForJid(targetJid);
         const forwardSnapshot = isForwardedFromDiscord && message?.wa2dcForwardSnapshot
             ? message.wa2dcForwardSnapshot
             : null;
         const snapshotEmbeds = Array.isArray(forwardSnapshot?.embeds) ? forwardSnapshot.embeds : [];
 
         if (!isForwardedFromDiscord && message.reference && !isNewsletterChat) {
-            options.quoted = await utils.whatsapp.createQuoteMessage(message, jid);
+            options.quoted = await utils.whatsapp.createQuoteMessage(message, targetJid);
             if (options.quoted == null) {
                 message.channel.send(`Couldn't find the message quoted. You can only reply to last ${state.settings.lastMessageStorage} messages. Sending the message without the quoted message.`);
             }
@@ -1147,7 +1180,7 @@ const connectToWhatsApp = async (retry = 1) => {
         const mentionResolution = await resolveDiscordTextMentionsForWhatsApp({
             message,
             text,
-            jid,
+            jid: targetJid,
             textCandidates: mentionTextCandidates,
             replyMentionId,
         });
@@ -1171,10 +1204,12 @@ const connectToWhatsApp = async (retry = 1) => {
                     if (!isNewsletterChat && mentionJids.length) doc.mentions = mentionJids;
                 }
                 try {
-                    const sentMessage = await client.sendMessage(jid, doc, first ? options : undefined);
-                    state.lastMessages[message.id] = sentMessage.key.id;
-                    state.lastMessages[sentMessage.key.id] = message.id;
-                    state.sentMessages.add(sentMessage.key.id);
+                    const sentMessage = await client.sendMessage(targetJid, doc, first ? options : undefined);
+                    mapDiscordMessageToWhatsAppMessage({
+                        discordMessageId: message.id,
+                        sentMessage,
+                        isNewsletter: isNewsletterChat,
+                    });
                     storeMessage(sentMessage);
                     sentAnyAttachment = true;
                 } catch (err) {
@@ -1189,7 +1224,7 @@ const connectToWhatsApp = async (retry = 1) => {
             }
             if (attemptedAttachmentSends > 0) {
                 state.logger?.warn?.({
-                    jid: normalizedJid,
+                    jid: targetJid,
                     discordMessageId: message.id,
                     attachments: attemptedAttachmentSends,
                 }, 'All attachment sends failed; falling back to text/link send');
@@ -1233,23 +1268,25 @@ const connectToWhatsApp = async (retry = 1) => {
         }
 
         try {
-            const sent = await client.sendMessage(jid, content, options);
-            state.lastMessages[message.id] = sent.key.id;
-            state.lastMessages[sent.key.id] = message.id;
-            state.sentMessages.add(sent.key.id);
+            const sent = await client.sendMessage(targetJid, content, options);
+            mapDiscordMessageToWhatsAppMessage({
+                discordMessageId: message.id,
+                sentMessage: sent,
+                isNewsletter: isNewsletterChat,
+            });
             storeMessage(sent);
         } catch (err) {
             state.logger?.error(err);
             if (isNewsletterChat) {
                 const metadata = typeof client.newsletterMetadata === 'function'
-                    ? await client.newsletterMetadata('jid', normalizedJid).catch(() => null)
+                    ? await client.newsletterMetadata('jid', targetJid).catch(() => null)
                     : null;
                 const role = metadata?.viewer_metadata?.role || metadata?.viewerMetadata?.role;
                 const roleHint = role && !['OWNER', 'ADMIN'].includes(role)
                     ? ` Current account role: ${role}.`
                     : '';
                 await message.channel?.send(
-                    `Couldn't send to WhatsApp channel ${normalizedJid}.${roleHint} Newsletters require OWNER/ADMIN posting rights and may reject some media types.`,
+                    `Couldn't send to WhatsApp channel ${targetJid}.${roleHint} Newsletters require OWNER/ADMIN posting rights and may reject some media types.`,
                 ).catch(() => {});
             }
         }
@@ -1325,19 +1362,40 @@ const connectToWhatsApp = async (retry = 1) => {
             return;
         }
 
+        const targetJid = normalizeSendJid(jid);
+        const newsletterChat = isNewsletterJid(targetJid);
         const key = {
             id: state.lastMessages[reaction.message.id],
             fromMe: reaction.message.webhookId == null || reaction.message.author.username === 'You',
-            remoteJid: jid,
+            remoteJid: targetJid,
         };
 
-        if (jid.endsWith('@g.us')) {
+        if (targetJid.endsWith('@g.us')) {
             key.participant = utils.whatsapp.toJid(reaction.message.author.username);
         }
 
-        const reactionOptions = buildSendOptionsForJid(jid);
+        if (newsletterChat) {
+            const serverId = typeof key.id === 'string' ? key.id.trim() : String(key.id || '').trim();
+            if (!serverId) {
+                return;
+            }
+            if (typeof client.newsletterReactMessage !== 'function') {
+                state.logger?.warn?.({ jid: targetJid }, 'newsletterReactMessage is unavailable on this WhatsApp client');
+                return;
+            }
+
+            try {
+                await client.newsletterReactMessage(targetJid, serverId, removed ? undefined : reaction.emoji.name);
+                state.sentReactions.add(serverId);
+            } catch (err) {
+                state.logger?.error(err);
+            }
+            return;
+        }
+
+        const reactionOptions = buildSendOptionsForJid(targetJid);
         try {
-            const reactionMsg = await client.sendMessage(jid, {
+            const reactionMsg = await client.sendMessage(targetJid, {
                 react: {
                     text: removed ? '' : reaction.emoji.name,
                     key,

@@ -97,6 +97,7 @@ Usage: `/newslettermessages jid:<optional ...@newsletter> count:<1-50> before:<u
 React to a newsletter message (or remove your reaction).  
 Usage: `/newsletterreact serverid:<newsletter message id> reaction:<optional emoji> jid:<optional ...@newsletter>`  
 If `reaction` is omitted, WA2DC removes your existing reaction for that message.
+You can also react directly with Discord emoji in linked newsletter channels; WA2DC now routes those through the newsletter-specific reaction API automatically.
 
 ### `/newslettersubscribeupdates`
 Request newsletter live updates subscription metadata.  
