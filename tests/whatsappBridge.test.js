@@ -1807,6 +1807,8 @@ test('Newsletter attachment ack rejection falls back to text/link send', async (
       image: { url: attachment.url },
       mimetype: attachment.contentType,
     });
+    const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==';
+    const attachmentUrl = `data:image/png;base64,${pngBase64}`;
 
     harness.fakeClient.sendMessage = async (jid, content, options) => {
       harness.fakeClient.sendCalls.push({ jid, content, options });
@@ -1843,7 +1845,7 @@ test('Newsletter attachment ack rejection falls back to text/link send', async (
         attachments: new Map([
           ['attachment-1', {
             id: 'attachment-1',
-            url: 'https://example.com/newsletter-photo.png',
+            url: attachmentUrl,
             name: 'newsletter-photo.png',
             contentType: 'image/png',
           }],
@@ -1857,15 +1859,72 @@ test('Newsletter attachment ack rejection falls back to text/link send', async (
     await delay(3000);
 
     assert.equal(harness.fakeClient.sendCalls.length, 2);
-    assert.equal(
-      harness.fakeClient.sendCalls[0]?.content?.image?.url,
-      'https://example.com/newsletter-photo.png',
-    );
+    assert.equal(Buffer.isBuffer(harness.fakeClient.sendCalls[0]?.content?.image), true);
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.mimetype, 'image/jpeg');
     assert.equal(
       harness.fakeClient.sendCalls[1]?.content?.text,
-      'https://example.com/newsletter-photo.png',
+      attachmentUrl,
     );
     assert.equal(harness.fakeClient.sendCalls[1]?.options?.getUrlInfo, undefined);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('Newsletter PNG attachments are normalized to JPEG before send attempt', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  try {
+    utils.whatsapp.createDocumentContent = (attachment) => ({
+      image: { url: attachment.url },
+      mimetype: attachment.contentType,
+    });
+
+    harness.fakeClient.sendMessage = async (jid, content, options) => {
+      harness.fakeClient.sendCalls.push({ jid, content, options });
+      if (content?.image) {
+        throw new Error('force-fallback-after-conversion');
+      }
+      harness.fakeClient._sendCounter += 1;
+      return { key: { id: `newsletter-jpeg-fallback-${harness.fakeClient._sendCounter}`, remoteJid: jid } };
+    };
+
+    const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==';
+    const pngDataUrl = `data:image/png;base64,${pngBase64}`;
+
+    harness.fakeClient.ev.emit('discordMessage', {
+      jid: '120363123456789@newsletter',
+      forwardContext: null,
+      message: {
+        id: 'dc-newsletter-png-normalize',
+        content: '',
+        cleanContent: '',
+        webhookId: null,
+        author: { username: 'BridgeUser' },
+        member: { displayName: 'BridgeUser' },
+        channel: { send: async () => {} },
+        attachments: new Map([
+          ['attachment-1', {
+            id: 'attachment-1',
+            url: pngDataUrl,
+            name: 'newsletter-photo.png',
+            contentType: 'image/png',
+          }],
+        ]),
+        stickers: new Map(),
+        embeds: [],
+        mentions: { users: new Map(), members: new Map(), roles: new Map() },
+      },
+    });
+
+    await delay(200);
+
+    assert.equal(harness.fakeClient.sendCalls.length, 2);
+    assert.equal(Buffer.isBuffer(harness.fakeClient.sendCalls[0]?.content?.image), true);
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.mimetype, 'image/jpeg');
+    assert.equal(
+      harness.fakeClient.sendCalls[1]?.content?.text,
+      pngDataUrl,
+    );
   } finally {
     harness.cleanup();
   }
@@ -1878,10 +1937,12 @@ test('Newsletter attachment send errors use one media attempt then text/link fal
       image: { url: attachment.url },
       mimetype: attachment.contentType,
     });
+    const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==';
+    const attachmentUrl = `data:image/png;base64,${pngBase64}`;
 
     harness.fakeClient.sendMessage = async (jid, content, options) => {
       harness.fakeClient.sendCalls.push({ jid, content, options });
-      if (content?.image?.url) {
+      if (content?.image) {
         throw new Error('newsletter URL media rejected');
       }
       harness.fakeClient._sendCounter += 1;
@@ -1902,7 +1963,7 @@ test('Newsletter attachment send errors use one media attempt then text/link fal
         attachments: new Map([
           ['attachment-1', {
             id: 'attachment-1',
-            url: 'https://cdn.discordapp.com/attachments/123/456/newsletter-photo.png',
+            url: attachmentUrl,
             name: 'newsletter-photo.png',
             contentType: 'image/png',
           }],
@@ -1916,13 +1977,10 @@ test('Newsletter attachment send errors use one media attempt then text/link fal
     await delay(80);
 
     assert.equal(harness.fakeClient.sendCalls.length, 2);
-    assert.equal(
-      harness.fakeClient.sendCalls[0]?.content?.image?.url,
-      'https://cdn.discordapp.com/attachments/123/456/newsletter-photo.png',
-    );
+    assert.equal(Boolean(harness.fakeClient.sendCalls[0]?.content?.image), true);
     assert.equal(
       harness.fakeClient.sendCalls[1]?.content?.text,
-      'https://cdn.discordapp.com/attachments/123/456/newsletter-photo.png',
+      attachmentUrl,
     );
   } finally {
     harness.cleanup();

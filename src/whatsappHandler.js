@@ -164,8 +164,11 @@ const NEWSLETTER_SUBSCRIPTION_RETRY_TTL_MS = 2 * 60 * 1000;
 const NEWSLETTER_MEDIA_STANZA_DEBUG_TTL_MS = 5 * 60 * 1000;
 const NEWSLETTER_MEDIA_STANZA_DEBUG_MAX = 256;
 const NEWSLETTER_MEDIA_STANZA_DEBUG_ENABLED = process.env.WA2DC_NEWSLETTER_MEDIA_DEBUG !== '0';
+const NEWSLETTER_IMAGE_NORMALIZATION_MAX_BYTES = 25 * 1024 * 1024;
+const NEWSLETTER_IMAGE_JPEG_MIME_TYPES = new Set(['image/jpeg', 'image/jpg']);
 const newsletterLiveUpdatesExpiresAt = new Map();
 const newsletterMediaStanzaDebug = new Map();
+let newsletterImageJimpPromise = null;
 const DISCORD_ATTACHMENT_MIME_BY_EXTENSION = {
     gif: 'image/gif',
     jpg: 'image/jpeg',
@@ -496,6 +499,126 @@ const normalizeAttachmentForWhatsAppSend = (attachment = {}) => {
     normalized.name = normalizedName || `attachment.${extension}`;
     normalized.contentType = mimetype;
     return normalized;
+};
+
+const normalizeMimeType = (value = '') => {
+    if (typeof value !== 'string') return '';
+    return value.split(';')[0].trim().toLowerCase();
+};
+
+const needsNewsletterImageNormalization = (content = {}) => {
+    const mimetype = normalizeMimeType(content?.mimetype);
+    return Boolean(
+        content?.image
+        && mimetype.startsWith('image/')
+        && !NEWSLETTER_IMAGE_JPEG_MIME_TYPES.has(mimetype),
+    );
+};
+
+const getNewsletterImageJimp = async () => {
+    if (!newsletterImageJimpPromise) {
+        newsletterImageJimpPromise = import('jimp')
+            .then((mod) => (typeof mod?.Jimp?.read === 'function' ? mod : null))
+            .catch(() => null);
+    }
+    return newsletterImageJimpPromise;
+};
+
+const loadNewsletterImageBuffer = async (source = null) => {
+    if (Buffer.isBuffer(source)) {
+        return source;
+    }
+    if (source instanceof Uint8Array) {
+        return Buffer.from(source);
+    }
+    const sourceUrl = typeof source?.url === 'string' ? source.url.trim() : '';
+    if (sourceUrl.startsWith('data:')) {
+        const commaIndex = sourceUrl.indexOf(',');
+        if (commaIndex < 0) {
+            return null;
+        }
+        const meta = sourceUrl.slice(0, commaIndex);
+        const payload = sourceUrl.slice(commaIndex + 1);
+        if (!payload) {
+            return null;
+        }
+        const isBase64 = /;base64$/i.test(meta);
+        const decoded = isBase64
+            ? Buffer.from(payload, 'base64')
+            : Buffer.from(decodeURIComponent(payload), 'utf8');
+        if (decoded.length > NEWSLETTER_IMAGE_NORMALIZATION_MAX_BYTES) {
+            throw new Error(`buffer_length_exceeded:${decoded.length}`);
+        }
+        return decoded;
+    }
+    if (!/^https?:\/\//i.test(sourceUrl)) {
+        return null;
+    }
+    const response = await fetch(sourceUrl);
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+    }
+    const contentLength = Number.parseInt(response.headers.get('content-length') || '', 10);
+    if (Number.isFinite(contentLength) && contentLength > NEWSLETTER_IMAGE_NORMALIZATION_MAX_BYTES) {
+        throw new Error(`content_length_exceeded:${contentLength}`);
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.length > NEWSLETTER_IMAGE_NORMALIZATION_MAX_BYTES) {
+        throw new Error(`buffer_length_exceeded:${buffer.length}`);
+    }
+    return buffer;
+};
+
+const normalizeNewsletterImageSendContent = async ({
+    content,
+    jid,
+    discordMessageId,
+} = {}) => {
+    if (!isNewsletterJid(jid) || !needsNewsletterImageNormalization(content)) {
+        return content;
+    }
+    const jimp = await getNewsletterImageJimp();
+    if (!jimp) {
+        return content;
+    }
+    try {
+        const sourceBuffer = await loadNewsletterImageBuffer(content?.image);
+        if (!sourceBuffer?.length) {
+            return content;
+        }
+        const image = await jimp.Jimp.read(sourceBuffer);
+        const jpegBuffer = await image.getBuffer('image/jpeg', { quality: 82 });
+        if (!jpegBuffer?.length) {
+            return content;
+        }
+        const width = toIntegerOrNull(image?.bitmap?.width);
+        const height = toIntegerOrNull(image?.bitmap?.height);
+        const normalizedContent = {
+            ...content,
+            image: jpegBuffer,
+            mimetype: 'image/jpeg',
+        };
+        if (width) normalizedContent.width = width;
+        if (height) normalizedContent.height = height;
+        state.logger?.debug?.({
+            jid,
+            discordMessageId: normalizeBridgeMessageId(discordMessageId),
+            sourceMime: normalizeMimeType(content?.mimetype),
+            sourceBytes: sourceBuffer.length,
+            jpegBytes: jpegBuffer.length,
+            width,
+            height,
+        }, 'Normalized newsletter image attachment to JPEG before send');
+        return normalizedContent;
+    } catch (err) {
+        state.logger?.debug?.({
+            err,
+            jid,
+            discordMessageId: normalizeBridgeMessageId(discordMessageId),
+            sourceMime: normalizeMimeType(content?.mimetype),
+        }, 'Failed to normalize newsletter image attachment');
+        return content;
+    }
 };
 
 const getNewsletterMediaField = (content = {}) => {
@@ -2660,8 +2783,15 @@ const connectToWhatsApp = async (retry = 1) => {
             let attemptedAttachmentSends = 0;
             for (const file of attachments) {
                 const preparedFile = normalizeAttachmentForWhatsAppSend(file);
-                const doc = utils.whatsapp.createDocumentContent(preparedFile);
+                let doc = utils.whatsapp.createDocumentContent(preparedFile);
                 if (!doc) continue;
+                if (newsletterChat) {
+                    doc = await normalizeNewsletterImageSendContent({
+                        content: doc,
+                        jid: targetJid,
+                        discordMessageId: message?.id,
+                    });
+                }
                 attemptedAttachmentSends += 1;
                 if (first) {
                     let captionText = hasOnlyCustomEmoji ? '' : text;
