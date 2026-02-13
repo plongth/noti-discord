@@ -21,7 +21,9 @@ import { oneWayAllowsDiscordToWhatsApp } from './oneWay.js';
 import {
     clearPendingNewsletterSends,
     getNewsletterAckError,
+    getPendingNewsletterSend,
     getNewsletterServerIdFromMessage,
+    isLikelyNewsletterServerId,
     notePendingNewsletterSend,
     normalizeBridgeMessageId,
     noteNewsletterAckError,
@@ -149,8 +151,14 @@ const NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS = 8000;
 const NEWSLETTER_SERVER_ID_WAIT_POLL_MS = 150;
 const NEWSLETTER_ACK_WAIT_WITH_SERVER_ID_MS = 2500;
 const NEWSLETTER_ACK_WAIT_WITHOUT_SERVER_ID_MS = 8000;
+const NEWSLETTER_SERVER_ID_FETCH_FALLBACK_COUNT = 30;
+const NEWSLETTER_SERVER_ID_FETCH_WINDOW_SECONDS = 12 * 60;
+const NEWSLETTER_SERVER_ID_FETCH_FALLBACK_WINDOW_SECONDS = 3 * 60;
+const NEWSLETTER_SUBSCRIPTION_DEFAULT_TTL_MS = 15 * 60 * 1000;
+const NEWSLETTER_SUBSCRIPTION_RETRY_TTL_MS = 2 * 60 * 1000;
 const NEWSLETTER_BUFFER_RETRY_MAX_BYTES = 64 * 1024 * 1024;
 const NEWSLETTER_BUFFER_FETCH_TIMEOUT_MS = 7000;
+const newsletterLiveUpdatesExpiresAt = new Map();
 const DISCORD_ATTACHMENT_HOSTS = new Set([
     'cdn.discordapp.com',
     'media.discordapp.net',
@@ -191,6 +199,211 @@ const newsletterAckWaitMsForSentMessage = (sentMessage) => (
         ? NEWSLETTER_ACK_WAIT_WITH_SERVER_ID_MS
         : NEWSLETTER_ACK_WAIT_WITHOUT_SERVER_ID_MS
 );
+
+const normalizeNewsletterSignatureText = (value) => {
+    if (typeof value !== 'string') return '';
+    return value.replace(/\s+/g, ' ').trim().slice(0, 512);
+};
+
+const getNewsletterSignatureFromMessagePayload = (message = {}) => {
+    if (!message || typeof message !== 'object') {
+        return { type: '', text: '' };
+    }
+    if (typeof message.conversation === 'string') {
+        return { type: 'text', text: normalizeNewsletterSignatureText(message.conversation) };
+    }
+    if (typeof message.extendedTextMessage?.text === 'string') {
+        return { type: 'text', text: normalizeNewsletterSignatureText(message.extendedTextMessage.text) };
+    }
+    if (message.imageMessage) {
+        return { type: 'image', text: normalizeNewsletterSignatureText(message.imageMessage.caption || '') };
+    }
+    if (message.videoMessage) {
+        return { type: 'video', text: normalizeNewsletterSignatureText(message.videoMessage.caption || '') };
+    }
+    if (message.audioMessage) {
+        return { type: 'audio', text: '' };
+    }
+    if (message.documentMessage) {
+        return { type: 'document', text: normalizeNewsletterSignatureText(message.documentMessage.caption || '') };
+    }
+    return { type: '', text: '' };
+};
+
+const toIntegerOrNull = (value) => {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return Math.trunc(value);
+    }
+    if (typeof value === 'string' && value.trim()) {
+        const parsed = Number.parseInt(value, 10);
+        if (Number.isFinite(parsed)) {
+            return parsed;
+        }
+    }
+    return null;
+};
+
+const toBufferIfPresent = (value) => {
+    if (!value) return null;
+    if (Buffer.isBuffer(value)) return value;
+    if (value instanceof Uint8Array) return Buffer.from(value);
+    if (typeof value === 'string') return Buffer.from(value, 'binary');
+    return null;
+};
+
+const getPlaintextNodes = (content = []) => {
+    if (!Array.isArray(content)) return [];
+    return content.filter((entry) => entry?.tag === 'plaintext');
+};
+
+const decodeNewsletterPlaintextNode = (node = {}) => {
+    const payload = toBufferIfPresent(node?.content);
+    if (!payload) return null;
+    try {
+        const decoded = proto.Message.decode(payload);
+        return decoded && typeof decoded.toJSON === 'function' ? decoded.toJSON() : decoded;
+    } catch {
+        return null;
+    }
+};
+
+const parseNewsletterFetchEntry = (entry = {}) => {
+    if (!entry || typeof entry !== 'object') return null;
+    const serverId = normalizeBridgeMessageId(
+        getNewsletterServerIdFromMessage(entry)
+        || entry?.attrs?.message_id
+        || entry?.attrs?.server_id
+        || entry?.id
+        || entry?.message_id
+        || entry?.server_id
+        || entry?.key?.id,
+    );
+    if (!isLikelyNewsletterServerId(serverId)) return null;
+
+    const messageTimestamp = toIntegerOrNull(
+        entry?.messageTimestamp
+        ?? entry?.timestamp
+        ?? entry?.ts
+        ?? entry?.t
+        ?? entry?.attrs?.t,
+    );
+
+    let payload = null;
+    if (entry?.message && typeof entry.message === 'object') {
+        payload = entry.message;
+    } else if (entry?.msg && typeof entry.msg === 'object') {
+        payload = entry.msg;
+    }
+    if (!payload) {
+        const plaintextNode = getPlaintextNodes(entry?.content)[0];
+        payload = decodeNewsletterPlaintextNode(plaintextNode);
+    }
+
+    const { type, text } = getNewsletterSignatureFromMessagePayload(payload || {});
+    return {
+        id: serverId,
+        timestamp: messageTimestamp,
+        type,
+        text,
+    };
+};
+
+const parseNewsletterFetchMessagesResult = (result) => {
+    const entries = [];
+    const visited = new Set();
+    const queue = [result];
+    const enqueue = (value) => {
+        if (value == null) return;
+        queue.push(value);
+    };
+
+    while (queue.length) {
+        const current = queue.shift();
+        if (current == null) continue;
+        if (Array.isArray(current)) {
+            current.forEach(enqueue);
+            continue;
+        }
+        if (typeof current !== 'object') continue;
+        if (visited.has(current)) continue;
+        visited.add(current);
+
+        const parsed = parseNewsletterFetchEntry(current);
+        if (parsed) {
+            entries.push(parsed);
+        }
+
+        if (Array.isArray(current.messages)) {
+            current.messages.forEach(enqueue);
+        }
+        if (Array.isArray(current.content)) {
+            current.content.forEach(enqueue);
+        }
+        if (current.message && typeof current.message === 'object') {
+            enqueue(current.message);
+        }
+    }
+
+    const deduped = new Map();
+    for (const entry of entries) {
+        if (!entry?.id) continue;
+        const existing = deduped.get(entry.id);
+        const existingTs = toIntegerOrNull(existing?.timestamp) || 0;
+        const nextTs = toIntegerOrNull(entry.timestamp) || 0;
+        if (!existing || nextTs >= existingTs) {
+            deduped.set(entry.id, entry);
+        }
+    }
+    return [...deduped.values()].sort((a, b) => {
+        const tsA = toIntegerOrNull(a?.timestamp) || 0;
+        const tsB = toIntegerOrNull(b?.timestamp) || 0;
+        return tsB - tsA;
+    });
+};
+
+const findNewsletterServerIdFromFetchedMessages = ({ messages = [], pending = null }) => {
+    if (!Array.isArray(messages) || !messages.length) return null;
+    const pendingText = normalizeNewsletterSignatureText(pending?.text || '');
+    const pendingType = typeof pending?.type === 'string' ? pending.type : '';
+    const pendingTimestamp = toIntegerOrNull(Math.floor((pending?.timestamp || 0) / 1000));
+    const nowTs = Math.floor(Date.now() / 1000);
+    const anchorTs = pendingTimestamp || nowTs;
+
+    const recentMessages = messages.filter((entry) => {
+        const ts = toIntegerOrNull(entry?.timestamp);
+        if (!ts) return true;
+        return Math.abs(ts - anchorTs) <= NEWSLETTER_SERVER_ID_FETCH_WINDOW_SECONDS;
+    });
+    const pool = recentMessages.length ? recentMessages : messages;
+
+    if (pendingType && pendingText) {
+        const exact = pool.find((entry) => entry.type === pendingType && entry.text === pendingText);
+        if (exact?.id) return exact.id;
+    }
+    if (pendingText) {
+        const byText = pool.find((entry) => entry.text === pendingText);
+        if (byText?.id) return byText.id;
+    }
+    if (pendingType && pendingTimestamp) {
+        const typed = pool
+            .filter((entry) => entry.type === pendingType && toIntegerOrNull(entry.timestamp))
+            .sort((a, b) => Math.abs(toIntegerOrNull(a.timestamp) - pendingTimestamp) - Math.abs(toIntegerOrNull(b.timestamp) - pendingTimestamp));
+        const typedBest = typed[0];
+        if (typedBest?.id && Math.abs(toIntegerOrNull(typedBest.timestamp) - pendingTimestamp) <= NEWSLETTER_SERVER_ID_FETCH_FALLBACK_WINDOW_SECONDS) {
+            return typedBest.id;
+        }
+    }
+    if (pendingTimestamp) {
+        const byTime = pool
+            .filter((entry) => toIntegerOrNull(entry.timestamp))
+            .sort((a, b) => Math.abs(toIntegerOrNull(a.timestamp) - pendingTimestamp) - Math.abs(toIntegerOrNull(b.timestamp) - pendingTimestamp));
+        const closest = byTime[0];
+        if (closest?.id && Math.abs(toIntegerOrNull(closest.timestamp) - pendingTimestamp) <= NEWSLETTER_SERVER_ID_FETCH_FALLBACK_WINDOW_SECONDS) {
+            return closest.id;
+        }
+    }
+    return null;
+};
 
 const isDiscordAttachmentUrl = (value = '') => {
     if (typeof value !== 'string' || !value) return false;
@@ -380,6 +593,107 @@ const mapNewsletterServerIdFromOutbound = ({ outboundId, serverId }) => {
     state.lastMessages[normalizedServerId] = discordMessageId;
     state.sentMessages.add(normalizedServerId);
     return normalizedServerId;
+};
+
+const ensureNewsletterLiveUpdatesSubscription = async (client, jid) => {
+    if (typeof client?.subscribeNewsletterUpdates !== 'function') {
+        return;
+    }
+    const normalizedJid = normalizeSendJid(jid);
+    if (!isNewsletterJid(normalizedJid)) {
+        return;
+    }
+    const now = Date.now();
+    const expiresAt = newsletterLiveUpdatesExpiresAt.get(normalizedJid) || 0;
+    if (expiresAt > now) {
+        return;
+    }
+    try {
+        const result = await client.subscribeNewsletterUpdates(normalizedJid);
+        const durationSeconds = toIntegerOrNull(result?.duration);
+        const ttlMs = durationSeconds && durationSeconds > 0
+            ? Math.max(60 * 1000, (durationSeconds - 15) * 1000)
+            : NEWSLETTER_SUBSCRIPTION_DEFAULT_TTL_MS;
+        newsletterLiveUpdatesExpiresAt.set(normalizedJid, now + ttlMs);
+        state.logger?.debug?.({ jid: normalizedJid, duration: durationSeconds || null }, 'Subscribed to newsletter live updates for server ID mapping');
+    } catch (err) {
+        newsletterLiveUpdatesExpiresAt.set(normalizedJid, now + NEWSLETTER_SUBSCRIPTION_RETRY_TTL_MS);
+        state.logger?.debug?.({ err, jid: normalizedJid }, 'Failed to subscribe to newsletter live updates');
+    }
+};
+
+const resolveNewsletterServerIdFromFetch = async ({
+    client,
+    jid,
+    discordMessageId,
+    candidateId = null,
+}) => {
+    if (typeof client?.newsletterFetchMessages !== 'function') {
+        return null;
+    }
+    const normalizedJid = normalizeSendJid(jid);
+    if (!isNewsletterJid(normalizedJid)) {
+        return null;
+    }
+    const normalizedCandidateId = normalizeBridgeMessageId(candidateId);
+    const normalizedDiscordMessageId = normalizeBridgeMessageId(discordMessageId);
+    const pending = getPendingNewsletterSend({
+        jid: normalizedJid,
+        outboundId: normalizedCandidateId,
+        discordMessageId: normalizedDiscordMessageId,
+    });
+    if (!pending) {
+        return null;
+    }
+    const pendingTimestamp = Number(pending.timestamp) || 0;
+    const since = pendingTimestamp
+        ? Math.max(0, Math.floor((pendingTimestamp - (NEWSLETTER_SERVER_ID_FETCH_WINDOW_SECONDS * 1000)) / 1000))
+        : undefined;
+
+    let result = null;
+    try {
+        result = await client.newsletterFetchMessages(
+            normalizedJid,
+            NEWSLETTER_SERVER_ID_FETCH_FALLBACK_COUNT,
+            since,
+            undefined,
+        );
+    } catch (err) {
+        state.logger?.debug?.({ err, jid: normalizedJid, discordMessageId, candidateId: normalizedCandidateId }, 'Failed to fetch newsletter messages for server ID resolution');
+        return null;
+    }
+
+    const parsedMessages = parseNewsletterFetchMessagesResult(result);
+    const serverId = normalizeBridgeMessageId(findNewsletterServerIdFromFetchedMessages({
+        messages: parsedMessages,
+        pending,
+    }));
+    if (!isLikelyNewsletterServerId(serverId)) {
+        return null;
+    }
+
+    const mappedDiscordMessageId = normalizedDiscordMessageId || normalizeBridgeMessageId(pending.discordMessageId);
+    if (mappedDiscordMessageId) {
+        state.lastMessages[mappedDiscordMessageId] = serverId;
+        state.lastMessages[serverId] = mappedDiscordMessageId;
+    }
+    const mappedOutboundId = normalizedCandidateId || normalizeBridgeMessageId(pending.outboundId);
+    if (mappedOutboundId && mappedDiscordMessageId) {
+        state.lastMessages[mappedOutboundId] = mappedDiscordMessageId;
+    }
+    state.sentMessages.add(serverId);
+    clearPendingNewsletterSends({
+        jid: normalizedJid,
+        discordMessageId: mappedDiscordMessageId || null,
+        outboundId: mappedOutboundId || null,
+    });
+    state.logger?.info?.({
+        jid: normalizedJid,
+        discordMessageId: mappedDiscordMessageId,
+        candidateId: mappedOutboundId || undefined,
+        serverId,
+    }, 'Resolved newsletter server ID via message fetch fallback');
+    return serverId;
 };
 
 const toMentionLabel = (value) => {
@@ -1566,6 +1880,32 @@ const connectToWhatsApp = async (retry = 1) => {
         });
     });
 
+    client.ws.on('CB:ack,class:message', (node = {}) => {
+        const attrs = node?.attrs || {};
+        const errorCode = normalizeBridgeMessageId(attrs?.error);
+        if (!errorCode) {
+            return;
+        }
+        const messageId = normalizeBridgeMessageId(attrs?.id);
+        if (!messageId) {
+            return;
+        }
+        const fromJid = normalizeSendJid(attrs?.from || attrs?.to || '');
+        if (!isNewsletterJid(fromJid)) {
+            return;
+        }
+        noteNewsletterAckError({
+            messageId,
+            jid: fromJid,
+            errorCode,
+        });
+        state.logger?.warn?.({
+            jid: fromJid,
+            id: messageId,
+            error: errorCode,
+        }, 'Newsletter send failed with ack error');
+    });
+
     client.ev.on('discordMessage', async ({ jid, message, forwardContext }) => {
         if (!allowsDiscordToWhatsApp()) {
             return;
@@ -1756,6 +2096,9 @@ const connectToWhatsApp = async (retry = 1) => {
                 watchNewsletterAck = false,
             } = {},
         ) => {
+            if (newsletterChat) {
+                await ensureNewsletterLiveUpdatesSubscription(client, targetJid);
+            }
             const sentMessage = await sendWithNewsletterQuoteFallback(content, sendOptions);
             mapDiscordMessageToWhatsAppMessage({
                 discordMessageId: message.id,
@@ -2015,6 +2358,20 @@ const connectToWhatsApp = async (retry = 1) => {
                 messageId = resolvedServerId;
                 state.lastMessages[message.id] = resolvedServerId;
                 state.lastMessages[resolvedServerId] = message.id;
+            } else {
+                const fetchedServerId = await resolveNewsletterServerIdFromFetch({
+                    client,
+                    jid: targetJid,
+                    discordMessageId: message.id,
+                    candidateId,
+                });
+                if (fetchedServerId) {
+                    messageId = fetchedServerId;
+                }
+            }
+            if (messageId && isLikelyNewsletterServerId(messageId)) {
+                state.lastMessages[message.id] = messageId;
+                state.lastMessages[messageId] = message.id;
             } else if (candidateId) {
                 const sendAckError = getNewsletterAckError(candidateId);
                 if (sendAckError) {
@@ -2127,12 +2484,20 @@ const connectToWhatsApp = async (retry = 1) => {
 
         if (newsletterChat) {
             const candidateId = normalizeBridgeMessageId(key.id);
-            const serverId = await waitForNewsletterServerId({
+            let serverId = await waitForNewsletterServerId({
                 discordMessageId: reaction?.message?.id,
                 candidateId: key.id,
                 timeoutMs: NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS,
                 pollMs: NEWSLETTER_SERVER_ID_WAIT_POLL_MS,
             });
+            if (!serverId) {
+                serverId = await resolveNewsletterServerIdFromFetch({
+                    client,
+                    jid: targetJid,
+                    discordMessageId: reaction?.message?.id,
+                    candidateId,
+                });
+            }
             const actionId = serverId || candidateId;
             if (!actionId) {
                 state.logger?.warn?.({
@@ -2211,7 +2576,7 @@ const connectToWhatsApp = async (retry = 1) => {
         const rawDeleteId = normalizeBridgeMessageId(id);
         const outboundCandidateId = rawDeleteId
             || normalizeBridgeMessageId(state.lastMessages[discordMessageId]);
-        const deleteId = newsletterChat
+        let deleteId = newsletterChat
             ? await waitForNewsletterServerId({
                 discordMessageId,
                 candidateId: outboundCandidateId,
@@ -2219,6 +2584,14 @@ const connectToWhatsApp = async (retry = 1) => {
                 pollMs: NEWSLETTER_SERVER_ID_WAIT_POLL_MS,
             })
             : rawDeleteId;
+        if (newsletterChat && !deleteId) {
+            deleteId = await resolveNewsletterServerIdFromFetch({
+                client,
+                jid: targetJid,
+                discordMessageId,
+                candidateId: outboundCandidateId,
+            });
+        }
         const actionDeleteId = deleteId || (newsletterChat ? outboundCandidateId : null);
         if (!targetJid || !actionDeleteId) {
             if (newsletterChat) {

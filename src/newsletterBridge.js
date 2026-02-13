@@ -217,6 +217,53 @@ const notePendingNewsletterSend = ({
   newsletterPendingSends.set(normalizedJid, queue);
 };
 
+const getPendingNewsletterSend = ({
+  jid = null,
+  outboundId = null,
+  discordMessageId = null,
+} = {}) => {
+  const normalizedJid = normalizeBridgeMessageId(jid);
+  const normalizedOutboundId = normalizeBridgeMessageId(outboundId);
+  const normalizedDiscordMessageId = normalizeBridgeMessageId(discordMessageId);
+  const keys = normalizedJid ? [normalizedJid] : [...newsletterPendingSends.keys()];
+  prunePendingNewsletterSends(normalizedJid);
+
+  for (const key of keys) {
+    const queue = newsletterPendingSends.get(key);
+    if (!Array.isArray(queue) || !queue.length) continue;
+
+    if (normalizedOutboundId) {
+      const foundByOutbound = queue.find((entry) => normalizeBridgeMessageId(entry?.outboundId) === normalizedOutboundId);
+      if (foundByOutbound) {
+        return {
+          jid: key,
+          discordMessageId: normalizeBridgeMessageId(foundByOutbound.discordMessageId),
+          outboundId: normalizeBridgeMessageId(foundByOutbound.outboundId),
+          type: typeof foundByOutbound.type === 'string' ? foundByOutbound.type : '',
+          text: typeof foundByOutbound.text === 'string' ? foundByOutbound.text : '',
+          timestamp: Number(foundByOutbound.timestamp) || 0,
+        };
+      }
+    }
+
+    if (normalizedDiscordMessageId) {
+      const foundByDiscordId = queue.find((entry) => normalizeBridgeMessageId(entry?.discordMessageId) === normalizedDiscordMessageId);
+      if (foundByDiscordId) {
+        return {
+          jid: key,
+          discordMessageId: normalizeBridgeMessageId(foundByDiscordId.discordMessageId),
+          outboundId: normalizeBridgeMessageId(foundByDiscordId.outboundId),
+          type: typeof foundByDiscordId.type === 'string' ? foundByDiscordId.type : '',
+          text: typeof foundByDiscordId.text === 'string' ? foundByDiscordId.text : '',
+          timestamp: Number(foundByDiscordId.timestamp) || 0,
+        };
+      }
+    }
+  }
+
+  return null;
+};
+
 const clearPendingNewsletterSends = ({
   jid = null,
   discordMessageId = null,
@@ -457,6 +504,7 @@ const getNewsletterAckError = (messageId) => {
 export {
   clearPendingNewsletterSends,
   getNewsletterAckError,
+  getPendingNewsletterSend,
   getNewsletterServerIdFromMessage,
   isLikelyNewsletterServerId,
   notePendingNewsletterSend,
