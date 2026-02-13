@@ -1089,6 +1089,79 @@ function stopDownloadServer() {
   }
 }
 
+const parseVersionTag = (tag = '') => {
+  const normalized = String(tag).trim().replace(/^v/i, '');
+  const match = normalized.match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/);
+  if (!match) return null;
+  const prerelease = match[4]
+    ? match[4]
+      .split('.')
+      .filter(Boolean)
+      .map((identifier) => (/^\d+$/.test(identifier) ? Number(identifier) : identifier))
+    : [];
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    prerelease,
+  };
+};
+
+const comparePrereleaseIdentifiers = (aIdentifiers = [], bIdentifiers = []) => {
+  const a = Array.isArray(aIdentifiers) ? aIdentifiers : [];
+  const b = Array.isArray(bIdentifiers) ? bIdentifiers : [];
+  const maxLen = Math.max(a.length, b.length);
+  for (let index = 0; index < maxLen; index += 1) {
+    const left = a[index];
+    const right = b[index];
+    if (typeof left === 'undefined' && typeof right === 'undefined') return 0;
+    if (typeof left === 'undefined') return -1;
+    if (typeof right === 'undefined') return 1;
+    if (left === right) continue;
+
+    const leftIsNumber = typeof left === 'number';
+    const rightIsNumber = typeof right === 'number';
+    if (leftIsNumber && rightIsNumber) {
+      return left > right ? 1 : -1;
+    }
+    if (leftIsNumber) return -1;
+    if (rightIsNumber) return 1;
+    const lexical = String(left).localeCompare(String(right));
+    if (lexical !== 0) return lexical > 0 ? 1 : -1;
+  }
+  return 0;
+};
+
+const compareVersionTags = (leftTag = '', rightTag = '') => {
+  const left = parseVersionTag(leftTag);
+  const right = parseVersionTag(rightTag);
+  if (!left || !right) return 0;
+
+  if (left.major !== right.major) return left.major > right.major ? 1 : -1;
+  if (left.minor !== right.minor) return left.minor > right.minor ? 1 : -1;
+  if (left.patch !== right.patch) return left.patch > right.patch ? 1 : -1;
+
+  const leftHasPrerelease = left.prerelease.length > 0;
+  const rightHasPrerelease = right.prerelease.length > 0;
+  if (!leftHasPrerelease && rightHasPrerelease) return 1;
+  if (leftHasPrerelease && !rightHasPrerelease) return -1;
+  if (!leftHasPrerelease && !rightHasPrerelease) return 0;
+  return comparePrereleaseIdentifiers(left.prerelease, right.prerelease);
+};
+
+const releaseSortTimestamp = (release = {}) => {
+  const published = Date.parse(release.published_at || '');
+  if (Number.isFinite(published)) return published;
+  const created = Date.parse(release.created_at || '');
+  return Number.isFinite(created) ? created : 0;
+};
+
+const compareReleases = (leftRelease = {}, rightRelease = {}) => {
+  const versionOrder = compareVersionTags(leftRelease.tag_name, rightRelease.tag_name);
+  if (versionOrder !== 0) return versionOrder;
+  return releaseSortTimestamp(leftRelease) - releaseSortTimestamp(rightRelease);
+};
+
 const updater = {
   isNode: process.argv0.replace('.exe', '').endsWith('node'),
 
@@ -1192,11 +1265,13 @@ const updater = {
       return null;
     }
 
+    const sortedReleases = [...releases].sort((left, right) => compareReleases(right, left));
+
     let release;
     if (channel === 'unstable') {
-      release = releases.find((rel) => rel.prerelease) || releases.find((rel) => !rel.prerelease);
+      release = sortedReleases.find((rel) => rel.prerelease) || sortedReleases.find((rel) => !rel.prerelease);
     } else {
-      release = releases.find((rel) => !rel.prerelease) || releases[0];
+      release = sortedReleases.find((rel) => !rel.prerelease) || sortedReleases[0];
     }
 
     if (!release || !release.tag_name) {
