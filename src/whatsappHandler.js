@@ -490,6 +490,54 @@ const buildNewsletterBufferRetryContent = async (doc = {}, preparedFile = {}) =>
     }
     return next;
 };
+
+const buildNewsletterImageJpegRetryContent = async (content = {}, preparedFile = {}) => {
+    const [kind, media] = getNewsletterMediaField(content);
+    if (kind !== 'image' || !media) {
+        return null;
+    }
+    const mediaBuffer = Buffer.isBuffer(media)
+        ? media
+        : (media instanceof Uint8Array
+            ? Buffer.from(media)
+            : await downloadNewsletterAttachmentBuffer(
+                (typeof media?.url === 'string' && media.url)
+                || (typeof preparedFile?.url === 'string' && preparedFile.url)
+                || '',
+            ));
+    if (!mediaBuffer?.length) {
+        return null;
+    }
+    const normalizedMime = typeof content?.mimetype === 'string'
+        ? content.mimetype.split(';')[0].trim().toLowerCase()
+        : '';
+    if (normalizedMime === 'image/jpeg' && Buffer.isBuffer(media)) {
+        return null;
+    }
+    try {
+        const jimp = await import('jimp');
+        if (typeof jimp?.Jimp?.read !== 'function') {
+            return null;
+        }
+        const image = await jimp.Jimp.read(mediaBuffer);
+        const jpegBuffer = await image.getBuffer('image/jpeg', { quality: 90 });
+        if (!jpegBuffer?.length) {
+            return null;
+        }
+        return {
+            ...content,
+            image: jpegBuffer,
+            mimetype: 'image/jpeg',
+        };
+    } catch (err) {
+        state.logger?.debug?.({
+            err,
+            attachmentName: preparedFile?.name || null,
+        }, 'Failed to convert newsletter image attachment to JPEG for retry');
+        return null;
+    }
+};
+
 const guessAttachmentExtension = (value = '') => {
     if (typeof value !== 'string') return null;
     const trimmed = value.trim();
@@ -2592,6 +2640,7 @@ const connectToWhatsApp = async (retry = 1) => {
                 for (const variant of attachmentVariants) {
                     let attachmentContent = variant.content;
                     let didBufferRetry = false;
+                    let didJpegRetry = false;
                     while (!sentAttachment) {
                         const contentSummary = summarizeNewsletterContentForDebug(attachmentContent);
                         noteNewsletterMessageDebug({
@@ -2619,34 +2668,60 @@ const connectToWhatsApp = async (retry = 1) => {
                                 sentAttachment = true;
                                 break;
                             }
-                            if (!newsletterChat || didBufferRetry) {
+                            if (!newsletterChat) {
                                 break;
                             }
-                            const bufferRetryContent = await buildNewsletterBufferRetryContent(attachmentContent, preparedFile);
-                            if (!bufferRetryContent) {
-                                break;
+                            if (!didBufferRetry) {
+                                const bufferRetryContent = await buildNewsletterBufferRetryContent(attachmentContent, preparedFile);
+                                if (bufferRetryContent) {
+                                    didBufferRetry = true;
+                                    attachmentContent = bufferRetryContent;
+                                    noteNewsletterMessageDebug({
+                                        discordMessageId: message.id,
+                                        jid: targetJid,
+                                        operation: 'Newsletter attachment send',
+                                        phase: 'retry_buffer_after_ack',
+                                        details: {
+                                            variant: variant.label,
+                                            attachmentName: preparedFile?.name || null,
+                                        },
+                                    });
+                                    state.logger?.warn?.({
+                                        jid: targetJid,
+                                        discordMessageId: message.id,
+                                        attachmentName: preparedFile?.name,
+                                        variant: variant.label,
+                                    }, 'Retrying newsletter attachment with buffer payload after ack rejection');
+                                    continue;
+                                }
                             }
-                            didBufferRetry = true;
-                            attachmentContent = bufferRetryContent;
-                            noteNewsletterMessageDebug({
-                                discordMessageId: message.id,
-                                jid: targetJid,
-                                operation: 'Newsletter attachment send',
-                                phase: 'retry_buffer_after_ack',
-                                details: {
-                                    variant: variant.label,
-                                    attachmentName: preparedFile?.name || null,
-                                },
-                            });
-                            state.logger?.warn?.({
-                                jid: targetJid,
-                                discordMessageId: message.id,
-                                attachmentName: preparedFile?.name,
-                                variant: variant.label,
-                            }, 'Retrying newsletter attachment with buffer payload after ack rejection');
-                            continue;
+                            if (!didJpegRetry) {
+                                const jpegRetryContent = await buildNewsletterImageJpegRetryContent(attachmentContent, preparedFile);
+                                if (jpegRetryContent) {
+                                    didJpegRetry = true;
+                                    attachmentContent = jpegRetryContent;
+                                    noteNewsletterMessageDebug({
+                                        discordMessageId: message.id,
+                                        jid: targetJid,
+                                        operation: 'Newsletter attachment send',
+                                        phase: 'retry_jpeg_after_ack',
+                                        details: {
+                                            variant: variant.label,
+                                            attachmentName: preparedFile?.name || null,
+                                        },
+                                    });
+                                    state.logger?.warn?.({
+                                        jid: targetJid,
+                                        discordMessageId: message.id,
+                                        attachmentName: preparedFile?.name,
+                                        variant: variant.label,
+                                    }, 'Retrying newsletter image attachment as JPEG payload after ack rejection');
+                                    continue;
+                                }
+                            }
+                            break;
                         } catch (err) {
-                            if (!newsletterChat || didBufferRetry) {
+                            if (!newsletterChat) {
                                 state.logger?.error(err);
                                 noteNewsletterMessageDebug({
                                     discordMessageId: message.id,
@@ -2661,40 +2736,68 @@ const connectToWhatsApp = async (retry = 1) => {
                                 });
                                 break;
                             }
-                            const bufferRetryContent = await buildNewsletterBufferRetryContent(attachmentContent, preparedFile);
-                            if (!bufferRetryContent) {
-                                state.logger?.error(err);
-                                noteNewsletterMessageDebug({
-                                    discordMessageId: message.id,
-                                    jid: targetJid,
-                                    operation: 'Newsletter attachment send',
-                                    phase: 'send_error_no_buffer_retry',
-                                    details: {
+                            if (!didBufferRetry) {
+                                const bufferRetryContent = await buildNewsletterBufferRetryContent(attachmentContent, preparedFile);
+                                if (bufferRetryContent) {
+                                    didBufferRetry = true;
+                                    attachmentContent = bufferRetryContent;
+                                    noteNewsletterMessageDebug({
+                                        discordMessageId: message.id,
+                                        jid: targetJid,
+                                        operation: 'Newsletter attachment send',
+                                        phase: 'retry_buffer_after_send_error',
+                                        details: {
+                                            variant: variant.label,
+                                            attachmentName: preparedFile?.name || null,
+                                        },
+                                    });
+                                    state.logger?.warn?.({
+                                        err,
+                                        jid: targetJid,
+                                        discordMessageId: message.id,
+                                        attachmentName: preparedFile?.name,
                                         variant: variant.label,
-                                        attachmentName: preparedFile?.name || null,
-                                    },
-                                });
-                                break;
+                                    }, 'Retrying newsletter attachment with buffer payload after send failure');
+                                    continue;
+                                }
                             }
-                            didBufferRetry = true;
-                            attachmentContent = bufferRetryContent;
+                            if (!didJpegRetry) {
+                                const jpegRetryContent = await buildNewsletterImageJpegRetryContent(attachmentContent, preparedFile);
+                                if (jpegRetryContent) {
+                                    didJpegRetry = true;
+                                    attachmentContent = jpegRetryContent;
+                                    noteNewsletterMessageDebug({
+                                        discordMessageId: message.id,
+                                        jid: targetJid,
+                                        operation: 'Newsletter attachment send',
+                                        phase: 'retry_jpeg_after_send_error',
+                                        details: {
+                                            variant: variant.label,
+                                            attachmentName: preparedFile?.name || null,
+                                        },
+                                    });
+                                    state.logger?.warn?.({
+                                        err,
+                                        jid: targetJid,
+                                        discordMessageId: message.id,
+                                        attachmentName: preparedFile?.name,
+                                        variant: variant.label,
+                                    }, 'Retrying newsletter image attachment as JPEG payload after send failure');
+                                    continue;
+                                }
+                            }
+                            state.logger?.error(err);
                             noteNewsletterMessageDebug({
                                 discordMessageId: message.id,
                                 jid: targetJid,
                                 operation: 'Newsletter attachment send',
-                                phase: 'retry_buffer_after_send_error',
+                                phase: 'send_error_no_retry',
                                 details: {
                                     variant: variant.label,
                                     attachmentName: preparedFile?.name || null,
                                 },
                             });
-                            state.logger?.warn?.({
-                                err,
-                                jid: targetJid,
-                                discordMessageId: message.id,
-                                attachmentName: preparedFile?.name,
-                                variant: variant.label,
-                            }, 'Retrying newsletter attachment with buffer payload after send failure');
+                            break;
                         }
                     }
                     if (sentAttachment) {

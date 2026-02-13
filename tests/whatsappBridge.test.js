@@ -1919,6 +1919,85 @@ test('Newsletter attachment send retries with buffer payload when URL media send
   }
 });
 
+test('Newsletter image ack rejection retries as JPEG media before link fallback', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  const originalFetch = global.fetch;
+  try {
+    const jimp = await import('jimp');
+    const sampleImage = new jimp.Jimp({ width: 4, height: 4, color: 0xff00ffff });
+    const pngPayload = await sampleImage.getBuffer('image/png');
+    global.fetch = async () => new Response(pngPayload, {
+      status: 200,
+      headers: { 'content-length': String(pngPayload.length) },
+    });
+    utils.whatsapp.createDocumentContent = (attachment) => ({
+      image: { url: attachment.url },
+      mimetype: attachment.contentType,
+    });
+
+    harness.fakeClient.sendMessage = async (jid, content, options) => {
+      harness.fakeClient.sendCalls.push({ jid, content, options });
+      harness.fakeClient._sendCounter += 1;
+      const outboundId = `jpeg-retry-${harness.fakeClient._sendCounter}`;
+      const isImageMedia = Boolean(content?.image);
+      const mimetype = typeof content?.mimetype === 'string' ? content.mimetype : '';
+      if (isImageMedia && mimetype !== 'image/jpeg') {
+        setTimeout(() => {
+          harness.fakeClient.ev.emit('messages.update', [{
+            key: { id: outboundId, remoteJid: jid, fromMe: true },
+            update: {
+              status: WAMessageStatus.ERROR,
+              messageStubParameters: ['479'],
+            },
+          }]);
+        }, 60);
+      }
+      return { key: { id: outboundId, remoteJid: jid, server_id: `server-${harness.fakeClient._sendCounter}` } };
+    };
+
+    harness.fakeClient.ev.emit('discordMessage', {
+      jid: '120363123456789@newsletter',
+      forwardContext: null,
+      message: {
+        id: 'dc-newsletter-jpeg-retry',
+        content: '',
+        cleanContent: '',
+        webhookId: null,
+        author: { username: 'BridgeUser' },
+        member: { displayName: 'BridgeUser' },
+        channel: { send: async () => {} },
+        attachments: new Map([
+          ['attachment-1', {
+            id: 'attachment-1',
+            url: 'https://cdn.discordapp.com/attachments/123/456/newsletter-photo.png',
+            name: 'newsletter-photo.png',
+            contentType: 'image/png',
+          }],
+        ]),
+        stickers: new Map(),
+        embeds: [],
+        mentions: { users: new Map(), members: new Map(), roles: new Map() },
+      },
+    });
+
+    await delay(3200);
+
+    assert.equal(harness.fakeClient.sendCalls.length, 3);
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.image?.url, 'https://cdn.discordapp.com/attachments/123/456/newsletter-photo.png');
+    assert.ok(Buffer.isBuffer(harness.fakeClient.sendCalls[1]?.content?.image));
+    assert.equal(harness.fakeClient.sendCalls[1]?.content?.mimetype, 'image/png');
+    assert.ok(Buffer.isBuffer(harness.fakeClient.sendCalls[2]?.content?.image));
+    assert.equal(harness.fakeClient.sendCalls[2]?.content?.mimetype, 'image/jpeg');
+    assert.equal(
+      harness.fakeClient.sendCalls.some((call) => typeof call?.content?.text === 'string'),
+      false,
+    );
+  } finally {
+    global.fetch = originalFetch;
+    harness.cleanup();
+  }
+});
+
 test('oneWay gating blocks Discord -> WhatsApp sends', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b01 });
   try {
