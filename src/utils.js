@@ -661,6 +661,14 @@ const normalizeAttachmentUrlForDedupe = (value = '') => {
     if (!['http:', 'https:'].includes(parsed.protocol)) {
       return trimmed;
     }
+
+    if (typeof parsed.hostname === 'string' && parsed.hostname.endsWith('discordapp.net')) {
+      const match = parsed.pathname.match(/\/(https|http)\/([^/]+)\/(.+)/);
+      if (match) {
+        const [, protocol, host, rest] = match;
+        return normalizeAttachmentUrlForDedupe(`${protocol}://${host}/${rest}`);
+      }
+    }
     parsed.search = '';
     parsed.hash = '';
     if (parsed.hostname === 'media.discordapp.net') {
