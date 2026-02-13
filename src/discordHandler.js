@@ -962,6 +962,15 @@ client.on('whatsappReaction', async (reaction) => {
   const channel = await utils.discord.getChannel(channelId);
   const message = await channel.messages.fetch(messageId);
   const msgReactions = state.reactions[messageId] || (state.reactions[messageId] = {});
+  const isNewsletterSynthetic = typeof reaction.author === 'string' && reaction.author.startsWith('newsletter:');
+  if (isNewsletterSynthetic && !reaction.text && reaction.author.split(':').length < 3) {
+    const prefix = `${reaction.author}:`;
+    for (const [authorKey, emoji] of Object.entries(msgReactions)) {
+      if (!authorKey.startsWith(prefix)) continue;
+      await message.reactions.cache.get(emoji)?.remove().catch(() => {});
+      delete msgReactions[authorKey];
+    }
+  }
   const prev = msgReactions[reaction.author];
   if (prev) {
     await message.reactions.cache.get(prev)?.remove().catch(() => {});
@@ -2412,6 +2421,7 @@ const commandHandlers = {
         await ctx.reply('This command only works in channels linked to WhatsApp chats.');
         return;
       }
+      const normalizedJid = utils.whatsapp.formatJid(jid) || jid;
       const question = ctx.getStringOption('question')?.trim();
       const rawOptions = ctx.getStringOption('options') || '';
       const values = rawOptions.split(',').map((opt) => opt.trim()).filter(Boolean);
@@ -2428,9 +2438,9 @@ const commandHandlers = {
         await ctx.reply('Selectable count must be at least 1 and no more than the number of options.');
         return;
       }
-      const toAnnouncementGroup = Boolean(ctx.getBooleanOption('announcement'));
+      const toAnnouncementGroup = Boolean(ctx.getBooleanOption('announcement')) || isNewsletterJid(normalizedJid);
       try {
-        const sent = await state.waClient.sendMessage(jid, {
+        const sent = await state.waClient.sendMessage(normalizedJid, {
           poll: {
             name: question,
             values,

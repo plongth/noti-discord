@@ -132,6 +132,79 @@ const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$
 const isBroadcastJid = (jid = '') => typeof jid === 'string' && jid.endsWith('@broadcast');
 const isNewsletterJid = (jid = '') => typeof jid === 'string' && jid.endsWith('@newsletter');
 const normalizeSendJid = (jid) => utils.whatsapp.formatJid(jid) || jid;
+const DISCORD_ATTACHMENT_MIME_BY_EXTENSION = {
+    gif: 'image/gif',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    jpe: 'image/jpeg',
+    png: 'image/png',
+    webp: 'image/webp',
+    bmp: 'image/bmp',
+    tif: 'image/tiff',
+    tiff: 'image/tiff',
+    mp4: 'video/mp4',
+    webm: 'video/webm',
+    mov: 'video/quicktime',
+    mp3: 'audio/mpeg',
+    wav: 'audio/wav',
+    ogg: 'audio/ogg',
+    oga: 'audio/ogg',
+    opus: 'audio/opus',
+    m4a: 'audio/mp4',
+    flac: 'audio/flac',
+    aac: 'audio/aac',
+    pdf: 'application/pdf',
+    txt: 'text/plain; charset=utf-8',
+    log: 'text/plain; charset=utf-8',
+    json: 'application/json; charset=utf-8',
+    csv: 'text/csv; charset=utf-8',
+    zip: 'application/zip',
+    '7z': 'application/x-7z-compressed',
+    gz: 'application/gzip',
+    tar: 'application/x-tar',
+};
+const guessAttachmentExtension = (value = '') => {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const noFragment = trimmed.split('#')[0];
+    const noQuery = noFragment.split('?')[0];
+    const base = noQuery.split('/').filter(Boolean).pop() || noQuery;
+    const match = base.match(/\.([a-z0-9]{1,16})$/i);
+    return match ? match[1].toLowerCase() : null;
+};
+const inferAttachmentMimeType = (attachment = {}) => {
+    const rawContentType = attachment?.contentType || attachment?.content_type;
+    if (typeof rawContentType === 'string') {
+        const normalized = rawContentType.split(';')[0].trim().toLowerCase();
+        if (
+            normalized.includes('/')
+            && normalized !== 'application/octet-stream'
+            && normalized !== 'binary/octet-stream'
+        ) {
+            return normalized;
+        }
+    }
+    const extension = guessAttachmentExtension(attachment?.name) || guessAttachmentExtension(attachment?.url);
+    if (extension && DISCORD_ATTACHMENT_MIME_BY_EXTENSION[extension]) {
+        return DISCORD_ATTACHMENT_MIME_BY_EXTENSION[extension];
+    }
+    return 'application/octet-stream';
+};
+const normalizeAttachmentForWhatsAppSend = (attachment = {}) => {
+    const normalized = { ...attachment };
+    const normalizedName = typeof attachment?.name === 'string' && attachment.name.trim()
+        ? attachment.name.trim()
+        : '';
+    const extensionFromName = guessAttachmentExtension(normalizedName);
+    const extensionFromUrl = guessAttachmentExtension(attachment?.url);
+    const mimetype = inferAttachmentMimeType(attachment);
+    const extFromMime = mimetype.includes('/') ? mimetype.split('/')[1]?.split('+')?.[0] : null;
+    const extension = extensionFromName || extensionFromUrl || extFromMime || 'bin';
+    normalized.name = normalizedName || `attachment.${extension}`;
+    normalized.contentType = mimetype;
+    return normalized;
+};
 const buildSendOptionsForJid = (jid) => {
     const normalizedJid = normalizeSendJid(jid);
     return isBroadcastJid(normalizedJid) ? { broadcast: true } : {};
@@ -860,7 +933,7 @@ const connectToWhatsApp = async (retry = 1) => {
     client.ev.on('messages.reaction', async (reactions) => {
         for await (const rawReaction of reactions) {
             if (!utils.whatsapp.inWhitelist(rawReaction) || !utils.whatsapp.sentAfterStart(rawReaction))
-                return;
+                continue;
 
             const msgId = utils.whatsapp.getId(rawReaction);
             if (state.sentReactions.has(msgId)) {
@@ -879,14 +952,50 @@ const connectToWhatsApp = async (retry = 1) => {
         }
     });
 
+    client.ev.on('newsletter.reaction', async (update = {}) => {
+        const jid = utils.whatsapp.formatJid(update?.id);
+        if (!jid) {
+            return;
+        }
+        if (!utils.whatsapp.inWhitelist({ key: { remoteJid: jid } })) {
+            return;
+        }
+
+        const serverId = typeof update?.server_id === 'string'
+            ? update.server_id.trim()
+            : String(update?.server_id || '').trim();
+        if (!serverId) {
+            return;
+        }
+        if (state.sentReactions.has(serverId)) {
+            state.sentReactions.delete(serverId);
+            return;
+        }
+
+        const reactionCode = typeof update?.reaction?.code === 'string' ? update.reaction.code.trim() : '';
+        const removed = Boolean(update?.reaction?.removed) || !reactionCode;
+        const syntheticAuthor = reactionCode
+            ? `newsletter:${serverId}:${reactionCode}`
+            : `newsletter:${serverId}`;
+
+        state.dcClient.emit('whatsappReaction', {
+            id: serverId,
+            jid,
+            text: removed ? '' : reactionCode,
+            author: syntheticAuthor,
+        });
+    });
+
     client.ev.on('messages.delete', async (updates) => {
         const keys = 'keys' in updates ? updates.keys : updates;
         for (const key of keys) {
             if (!utils.whatsapp.inWhitelist({ key })) continue;
             const jid = await utils.whatsapp.getChannelJid({ key });
             if (!jid) continue;
+            const id = getNewsletterServerIdFromMessage({ key }) || key?.id;
+            if (!id) continue;
             state.dcClient.emit('whatsappDelete', {
-                id: key.id,
+                id,
                 jid,
             });
         }
@@ -1192,7 +1301,8 @@ const connectToWhatsApp = async (retry = 1) => {
             let sentAnyAttachment = false;
             let attemptedAttachmentSends = 0;
             for (const file of attachments) {
-                const doc = utils.whatsapp.createDocumentContent(file);
+                const preparedFile = normalizeAttachmentForWhatsAppSend(file);
+                const doc = utils.whatsapp.createDocumentContent(preparedFile);
                 if (!doc) continue;
                 attemptedAttachmentSends += 1;
                 if (first) {
@@ -1415,12 +1525,17 @@ const connectToWhatsApp = async (retry = 1) => {
             return;
         }
 
-        const deleteOptions = buildSendOptionsForJid(jid);
+        const targetJid = normalizeSendJid(jid);
+        const deleteId = typeof id === 'string' ? id.trim() : String(id || '').trim();
+        if (!targetJid || !deleteId) {
+            return;
+        }
+        const deleteOptions = buildSendOptionsForJid(targetJid);
         try {
-            await client.sendMessage(jid, {
+            await client.sendMessage(targetJid, {
                 delete: {
-                    remoteJid: jid,
-                    id,
+                    remoteJid: targetJid,
+                    id: deleteId,
                     fromMe: true,
                 },
             }, deleteOptions);

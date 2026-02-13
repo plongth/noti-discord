@@ -45,3 +45,5 @@ Routing may be restricted by deployment settings. Message-flow changes must pres
 - newsletter delivery mode for WhatsApp `@newsletter` chats:
   use standard `sendMessage`, skip quote threading, and prefer text/link fallback when media send fails
   and use `newsletterReactMessage(jid, serverId, reaction?)` (not generic `sendMessage(...react...)`) for reactions.
+  Poll sends to newsletters should set announcement-mode (`poll.toAnnouncementGroup = true`).
+  Mirror incoming WhatsApp newsletter reactions via `newsletter.reaction` events and key them by `server_id`.

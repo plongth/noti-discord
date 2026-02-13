@@ -3348,6 +3348,11 @@ const whatsapp = {
   },
   getId(rawMsg) {
     return rawMsg?.message?.editedMessage?.message?.protocolMessage?.key?.id
+      || rawMsg?.key?.server_id
+      || rawMsg?.key?.serverId
+      || rawMsg?.messageServerID
+      || rawMsg?.server_id
+      || rawMsg?.serverId
       || rawMsg?.key?.id
       || rawMsg?.id;
   },

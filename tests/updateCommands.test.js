@@ -425,3 +425,79 @@ test('/newsletterinviteinfo returns invite link/code from metadata', async () =>
     resetClientFactoryOverrides();
   }
 });
+
+test('/poll in a newsletter-linked channel forces announcement-group mode', async () => {
+  const originalDiscordUtils = {
+    getGuild: utils.discord.getGuild,
+    getControlChannel: utils.discord.getControlChannel,
+  };
+  const originalSettings = {
+    Token: state.settings.Token,
+    GuildID: state.settings.GuildID,
+    ControlChannelID: state.settings.ControlChannelID,
+  };
+  const originalDcClient = state.dcClient;
+  const originalWaClient = state.waClient;
+  const originalChats = { ...state.chats };
+
+  try {
+    state.settings.Token = 'TEST_TOKEN';
+    state.settings.GuildID = 'guild';
+    state.settings.ControlChannelID = 'control';
+    restoreObject(state.chats, {
+      '120363123456789012@newsletter': { channelId: 'newsletter-room' },
+    });
+
+    utils.discord.getGuild = async () => ({ commands: { set: async () => {} } });
+    utils.discord.getControlChannel = async () => ({ send: async () => {} });
+
+    let sentPayload = null;
+    state.waClient = {
+      async sendMessage(jid, content) {
+        sentPayload = { jid, content };
+        return {
+          key: {
+            id: 'poll-msg-1',
+            remoteJid: jid,
+          },
+        };
+      },
+    };
+
+    const fakeClient = new FakeDiscordClient();
+    setClientFactoryOverrides({ createDiscordClient: () => fakeClient });
+    const discordHandler = await importDiscordHandler('poll-newsletter-announcement-mode');
+    state.dcClient = await discordHandler.start();
+    await delay(0);
+
+    const interaction = createInteraction({
+      channelId: 'newsletter-room',
+      commandName: 'poll',
+      stringOptions: {
+        question: 'Bridge poll?',
+        options: 'Yes,No',
+      },
+      integerOptions: {
+        select: 1,
+      },
+    });
+    fakeClient.emit('interactionCreate', interaction);
+    await delay(0);
+
+    assert.equal(sentPayload?.jid, '120363123456789012@newsletter');
+    assert.equal(sentPayload?.content?.poll?.toAnnouncementGroup, true);
+    assert.equal(interaction.records.editReply[0]?.content, 'Poll sent to WhatsApp!');
+  } finally {
+    utils.discord.getGuild = originalDiscordUtils.getGuild;
+    utils.discord.getControlChannel = originalDiscordUtils.getControlChannel;
+
+    state.settings.Token = originalSettings.Token;
+    state.settings.GuildID = originalSettings.GuildID;
+    state.settings.ControlChannelID = originalSettings.ControlChannelID;
+
+    state.dcClient = originalDcClient;
+    state.waClient = originalWaClient;
+    restoreObject(state.chats, originalChats);
+    resetClientFactoryOverrides();
+  }
+});

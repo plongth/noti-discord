@@ -34,7 +34,7 @@ Usage: `/list query:<optional text>`
 ### `/poll`
 Create a WhatsApp poll from Discord.  
 Usage: `/poll question:"text" options:"opt1,opt2,..." select:<count> announcement:<true|false>`  
-Notes: Poll messages and live vote updates are mirrored to Discord, voting can only be done directly in WhatsApp.
+Notes: Poll messages and live vote updates are mirrored to Discord, voting can only be done directly in WhatsApp. In newsletter-linked channels, WA2DC automatically enables announcement-mode poll payloads.
 
 ### `/setpinduration`
 Set the default expiration time (24h, 7d, or 30d) for WhatsApp pins created from Discord.  

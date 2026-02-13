@@ -358,6 +358,127 @@ test('Discord messageDelete emits discordDelete for bridged messages', async () 
   }
 });
 
+test('Discord messageDelete in newsletter channels emits server_id mapped discordDelete', async () => {
+  const originalDiscordUtils = {
+    getGuild: utils.discord.getGuild,
+    getControlChannel: utils.discord.getControlChannel,
+    channelIdToJid: utils.discord.channelIdToJid,
+    getOrCreateChannel: utils.discord.getOrCreateChannel,
+    safeWebhookSend: utils.discord.safeWebhookSend,
+  };
+  const originalSettings = {
+    Token: state.settings.Token,
+    GuildID: state.settings.GuildID,
+  };
+  const originalDcClient = state.dcClient;
+  const originalWaClient = state.waClient;
+  const originalLastMessages = state.lastMessages;
+  const originalReactions = state.reactions;
+  const originalChats = { ...state.chats };
+
+  try {
+    state.settings.Token = 'TEST_TOKEN';
+    state.settings.GuildID = 'guild';
+    state.lastMessages = {};
+    state.reactions = {};
+    restoreObject(state.chats, {
+      '120363123456789@newsletter': {
+        id: 'wh',
+        token: 'tok',
+        type: 'incoming',
+        channelId: 'chan-1',
+      },
+    });
+
+    utils.discord.getGuild = async () => ({ commands: { set: async () => {} } });
+    utils.discord.getControlChannel = async () => ({ send: async () => {} });
+    utils.discord.channelIdToJid = () => '120363123456789@newsletter';
+    utils.discord.getOrCreateChannel = async () => ({
+      id: 'wh',
+      token: 'tok',
+      type: 'incoming',
+      channelId: 'chan-1',
+      channel: { type: 'GUILD_TEXT' },
+    });
+    utils.discord.safeWebhookSend = async () => ({
+      id: 'dc-news-1',
+      channel: { type: 'GUILD_TEXT' },
+      channelId: 'chan-1',
+      guildId: 'guild',
+      url: 'https://discord.com/channels/guild/chan-1/dc-news-1',
+    });
+
+    const waEvents = [];
+    const waEv = new EventEmitter();
+    waEv.on('discordDelete', (payload) => waEvents.push(payload));
+    state.waClient = { ev: waEv };
+
+    class FakeDiscordClient extends EventEmitter {
+      constructor() {
+        super();
+        this.user = { id: 'bot-1' };
+      }
+
+      async login() {
+        queueMicrotask(() => this.emit('ready'));
+        return this;
+      }
+    }
+
+    const fakeClient = new FakeDiscordClient();
+    setClientFactoryOverrides({ createDiscordClient: () => fakeClient });
+    const discordHandler = await importDiscordHandler('newsletter-message-delete-server-id');
+    state.dcClient = await discordHandler.start();
+
+    fakeClient.emit('whatsappMessage', {
+      id: 'newsletter-server-id-1',
+      name: 'Channel Owner',
+      content: 'newsletter content',
+      channelJid: '120363123456789@newsletter',
+      file: null,
+      quote: null,
+      profilePic: null,
+      isGroup: false,
+      isForwarded: false,
+      isEdit: false,
+    });
+    await delay(0);
+
+    assert.equal(state.lastMessages['newsletter-server-id-1'], 'dc-news-1');
+    assert.equal(state.lastMessages['dc-news-1'], 'newsletter-server-id-1');
+
+    fakeClient.emit('messageDelete', {
+      id: 'dc-news-1',
+      channelId: 'chan-1',
+      webhookId: null,
+      author: { id: 'user-1' },
+      channel: { send: async () => {} },
+    });
+    await delay(0);
+
+    assert.deepEqual(waEvents, [{
+      jid: '120363123456789@newsletter',
+      id: 'newsletter-server-id-1',
+    }]);
+  } finally {
+    utils.discord.getGuild = originalDiscordUtils.getGuild;
+    utils.discord.getControlChannel = originalDiscordUtils.getControlChannel;
+    utils.discord.channelIdToJid = originalDiscordUtils.channelIdToJid;
+    utils.discord.getOrCreateChannel = originalDiscordUtils.getOrCreateChannel;
+    utils.discord.safeWebhookSend = originalDiscordUtils.safeWebhookSend;
+
+    state.settings.Token = originalSettings.Token;
+    state.settings.GuildID = originalSettings.GuildID;
+
+    state.dcClient = originalDcClient;
+    state.waClient = originalWaClient;
+    state.lastMessages = originalLastMessages;
+    state.reactions = originalReactions;
+    restoreObject(state.chats, originalChats);
+    resetClientFactoryOverrides();
+  }
+});
+
 test('Discord pin system messages are not forwarded to WhatsApp', async () => {
   const originalDiscordUtils = {
     getGuild: utils.discord.getGuild,

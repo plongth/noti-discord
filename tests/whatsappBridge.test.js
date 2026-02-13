@@ -61,7 +61,7 @@ const setupWhatsAppHarness = async ({
     utils.whatsapp = {
       _profilePicsCache: {},
       sendQR() {},
-      getId: (raw) => raw.key.id,
+      getId: (...args) => originalWhatsappUtils.getId(...args),
       getMessageType: (...args) => getMessageType(...args),
       inWhitelist: (...args) => inWhitelist(...args),
       sentAfterStart: (...args) => sentAfterStart(...args),
@@ -292,6 +292,77 @@ test('WhatsApp sentReactions prevents echoing reactions back to Discord', async 
   }
 });
 
+test('WhatsApp newsletter upserts prefer server_id as bridged message id', async () => {
+  const harness = await setupWhatsAppHarness();
+  try {
+    harness.fakeClient.ev.emit('messages.upsert', {
+      type: 'notify',
+      messages: [{
+        key: {
+          id: 'newsletter-client-id',
+          server_id: 'newsletter-server-id',
+          remoteJid: '120363123456789@newsletter',
+        },
+        message: 'newsletter post',
+      }],
+    });
+
+    await delay(0);
+
+    assert.equal(harness.forwarded.messages.length, 1);
+    assert.equal(harness.forwarded.messages[0]?.id, 'newsletter-server-id');
+    assert.equal(harness.forwarded.messages[0]?.channelJid, '120363123456789@newsletter');
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('WhatsApp newsletter reactions are mirrored through newsletter.reaction events', async () => {
+  const harness = await setupWhatsAppHarness();
+  try {
+    harness.fakeClient.ev.emit('newsletter.reaction', {
+      id: '120363123456789@newsletter',
+      server_id: 'newsletter-server-id',
+      reaction: {
+        code: '🔥',
+        count: 1,
+      },
+    });
+
+    await delay(0);
+
+    assert.equal(harness.forwarded.reactions.length, 1);
+    assert.equal(harness.forwarded.reactions[0]?.id, 'newsletter-server-id');
+    assert.equal(harness.forwarded.reactions[0]?.jid, '120363123456789@newsletter');
+    assert.equal(harness.forwarded.reactions[0]?.text, '🔥');
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('WhatsApp newsletter reaction echo suppression uses server_id', async () => {
+  const harness = await setupWhatsAppHarness();
+  try {
+    state.sentReactions.add('newsletter-server-id');
+
+    harness.fakeClient.ev.emit('newsletter.reaction', {
+      id: '120363123456789@newsletter',
+      server_id: 'newsletter-server-id',
+      reaction: {
+        code: '🔥',
+        count: 1,
+      },
+    });
+
+    await delay(0);
+
+    assert.equal(harness.forwarded.reactions.length, 0);
+    assert.equal(state.sentReactions.has('newsletter-server-id'), false);
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test('WhatsApp sentPins prevents echoing pins back to Discord', async () => {
   const harness = await setupWhatsAppHarness();
   try {
@@ -411,6 +482,25 @@ test('Discord reactions in newsletter chats use newsletter-specific API', async 
 
     assert.equal(harness.fakeClient.newsletterReactionCalls.length, 2);
     assert.equal(harness.fakeClient.newsletterReactionCalls[1]?.reaction, undefined);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('Discord newsletter deletes use normalized server ids', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  try {
+    harness.fakeClient.ev.emit('discordDelete', {
+      jid: '1203630@newsletter',
+      id: '  newsletter-server-id-1  ',
+    });
+
+    await delay(0);
+
+    assert.equal(harness.fakeClient.sendCalls.length, 1);
+    assert.equal(harness.fakeClient.sendCalls[0]?.jid, '1203630@newsletter');
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.delete?.id, 'newsletter-server-id-1');
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.delete?.remoteJid, '1203630@newsletter');
   } finally {
     harness.cleanup();
   }
@@ -1041,6 +1131,131 @@ test('Discord replies to newsletter chats skip WhatsApp quote lookup', async () 
     assert.equal(channelWarnings.length, 0);
     assert.equal(harness.fakeClient.sendCalls.length, 1);
     assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, 'newsletter post');
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('Newsletter media sends infer image type when Discord attachment contentType is missing', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  try {
+    utils.whatsapp.createDocumentContent = (attachment) => {
+      const majorType = String(attachment?.contentType || '').split('/')[0];
+      if (majorType === 'image' || majorType === 'video' || majorType === 'audio') {
+        return { [majorType]: { url: attachment.url } };
+      }
+      return {
+        document: { url: attachment.url },
+        fileName: attachment.name,
+        mimetype: attachment.contentType,
+      };
+    };
+
+    harness.fakeClient.sendMessage = async (jid, content, options) => {
+      harness.fakeClient.sendCalls.push({ jid, content, options });
+      if (typeof jid === 'string' && jid.endsWith('@newsletter') && content?.document) {
+        throw new Error('newsletter rejected document media');
+      }
+      harness.fakeClient._sendCounter += 1;
+      return { key: { id: `sent-${harness.fakeClient._sendCounter}`, remoteJid: jid, server_id: `server-${harness.fakeClient._sendCounter}` } };
+    };
+
+    harness.fakeClient.ev.emit('discordMessage', {
+      jid: '120363123456789@newsletter',
+      forwardContext: { isForwarded: true, sourceChannelId: 'chan-a', sourceMessageId: 'm-1', sourceGuildId: 'guild-a' },
+      message: {
+        id: 'dc-newsletter-infer-image',
+        content: '',
+        cleanContent: '',
+        webhookId: null,
+        author: { username: 'BridgeUser' },
+        member: { displayName: 'BridgeUser' },
+        channel: { send: async () => {} },
+        attachments: new Map(),
+        stickers: new Map(),
+        embeds: [],
+        wa2dcForwardSnapshot: {
+          content: '',
+          attachments: [{
+            url: 'https://cdn.discordapp.com/attachments/123/456/photo.png',
+            name: 'photo.png',
+          }],
+        },
+        mentions: { users: new Map(), members: new Map(), roles: new Map() },
+      },
+    });
+
+    await delay(0);
+
+    assert.equal(harness.fakeClient.sendCalls.length, 1);
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.image?.url, 'https://cdn.discordapp.com/attachments/123/456/photo.png');
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.document, undefined);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('Newsletter voice note sends infer audio type and keep ptt flag when contentType is missing', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  try {
+    utils.whatsapp.createDocumentContent = (attachment) => {
+      const majorType = String(attachment?.contentType || '').split('/')[0];
+      if (majorType === 'audio') {
+        return {
+          audio: { url: attachment.url },
+          ...(attachment.name.toLowerCase().endsWith('.ogg') ? { ptt: true } : {}),
+        };
+      }
+      if (majorType === 'image' || majorType === 'video') {
+        return { [majorType]: { url: attachment.url } };
+      }
+      return {
+        document: { url: attachment.url },
+        fileName: attachment.name,
+        mimetype: attachment.contentType,
+      };
+    };
+
+    harness.fakeClient.sendMessage = async (jid, content, options) => {
+      harness.fakeClient.sendCalls.push({ jid, content, options });
+      if (typeof jid === 'string' && jid.endsWith('@newsletter') && content?.document) {
+        throw new Error('newsletter rejected document media');
+      }
+      harness.fakeClient._sendCounter += 1;
+      return { key: { id: `sent-${harness.fakeClient._sendCounter}`, remoteJid: jid, server_id: `server-${harness.fakeClient._sendCounter}` } };
+    };
+
+    harness.fakeClient.ev.emit('discordMessage', {
+      jid: '120363123456789@newsletter',
+      forwardContext: { isForwarded: true, sourceChannelId: 'chan-a', sourceMessageId: 'm-1', sourceGuildId: 'guild-a' },
+      message: {
+        id: 'dc-newsletter-infer-voice',
+        content: '',
+        cleanContent: '',
+        webhookId: null,
+        author: { username: 'BridgeUser' },
+        member: { displayName: 'BridgeUser' },
+        channel: { send: async () => {} },
+        attachments: new Map(),
+        stickers: new Map(),
+        embeds: [],
+        wa2dcForwardSnapshot: {
+          content: '',
+          attachments: [{
+            url: 'https://cdn.discordapp.com/attachments/123/456/voice-message.ogg',
+            name: 'voice-message.ogg',
+          }],
+        },
+        mentions: { users: new Map(), members: new Map(), roles: new Map() },
+      },
+    });
+
+    await delay(0);
+
+    assert.equal(harness.fakeClient.sendCalls.length, 1);
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.audio?.url, 'https://cdn.discordapp.com/attachments/123/456/voice-message.ogg');
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.ptt, true);
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.document, undefined);
   } finally {
     harness.cleanup();
   }
