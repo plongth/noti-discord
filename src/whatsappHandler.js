@@ -161,13 +161,7 @@ const NEWSLETTER_SERVER_ID_FETCH_WINDOW_SECONDS = 12 * 60;
 const NEWSLETTER_SERVER_ID_FETCH_FALLBACK_WINDOW_SECONDS = 3 * 60;
 const NEWSLETTER_SUBSCRIPTION_DEFAULT_TTL_MS = 15 * 60 * 1000;
 const NEWSLETTER_SUBSCRIPTION_RETRY_TTL_MS = 2 * 60 * 1000;
-const NEWSLETTER_BUFFER_RETRY_MAX_BYTES = 64 * 1024 * 1024;
-const NEWSLETTER_BUFFER_FETCH_TIMEOUT_MS = 7000;
 const newsletterLiveUpdatesExpiresAt = new Map();
-const DISCORD_ATTACHMENT_HOSTS = new Set([
-    'cdn.discordapp.com',
-    'media.discordapp.net',
-]);
 const DISCORD_ATTACHMENT_MIME_BY_EXTENSION = {
     gif: 'image/gif',
     jpg: 'image/jpeg',
@@ -413,131 +407,6 @@ const findNewsletterServerIdFromFetchedMessages = ({ messages = [], pending = nu
     return null;
 };
 
-const isDiscordAttachmentUrl = (value = '') => {
-    if (typeof value !== 'string' || !value) return false;
-    try {
-        const parsed = new URL(value);
-        return DISCORD_ATTACHMENT_HOSTS.has(parsed.hostname.toLowerCase());
-    } catch {
-        return false;
-    }
-};
-
-const downloadNewsletterAttachmentBuffer = async (url) => {
-    if (!isDiscordAttachmentUrl(url)) return null;
-    const controller = typeof AbortController === 'function' ? new AbortController() : null;
-    const timeout = controller
-        ? setTimeout(() => controller.abort(), NEWSLETTER_BUFFER_FETCH_TIMEOUT_MS)
-        : null;
-    if (typeof timeout?.unref === 'function') {
-        timeout.unref();
-    }
-    let response;
-    try {
-        response = await fetch(url, {
-            redirect: 'follow',
-            ...(controller ? { signal: controller.signal } : {}),
-        });
-    } catch (err) {
-        state.logger?.debug?.({ err, url }, 'Failed to fetch newsletter attachment URL for buffer retry');
-        return null;
-    } finally {
-        if (timeout) {
-            clearTimeout(timeout);
-        }
-    }
-    if (!response?.ok) {
-        state.logger?.debug?.({ status: response?.status, url }, 'Newsletter attachment fetch for buffer retry returned non-OK status');
-        return null;
-    }
-    const contentLengthRaw = Number(response.headers.get('content-length'));
-    if (Number.isFinite(contentLengthRaw) && contentLengthRaw > NEWSLETTER_BUFFER_RETRY_MAX_BYTES) {
-        state.logger?.warn?.({
-            url,
-            size: contentLengthRaw,
-            max: NEWSLETTER_BUFFER_RETRY_MAX_BYTES,
-        }, 'Skipping newsletter media buffer retry because attachment exceeds max size');
-        return null;
-    }
-    const data = Buffer.from(await response.arrayBuffer());
-    if (data.length > NEWSLETTER_BUFFER_RETRY_MAX_BYTES) {
-        state.logger?.warn?.({
-            url,
-            size: data.length,
-            max: NEWSLETTER_BUFFER_RETRY_MAX_BYTES,
-        }, 'Skipping newsletter media buffer retry because downloaded payload exceeds max size');
-        return null;
-    }
-    return data;
-};
-
-const buildNewsletterBufferRetryContent = async (doc = {}, preparedFile = {}) => {
-    if (!doc || typeof doc !== 'object') return null;
-    const mediaType = doc.image
-        ? 'image'
-        : (doc.video ? 'video' : (doc.audio ? 'audio' : (doc.document ? 'document' : null)));
-    if (!mediaType) return null;
-    const currentMedia = doc[mediaType];
-    const mediaUrl = currentMedia?.url;
-    if (!mediaUrl) return null;
-    const buffer = await downloadNewsletterAttachmentBuffer(mediaUrl);
-    if (!buffer) return null;
-
-    const next = { ...doc, [mediaType]: buffer };
-    if (mediaType === 'document') {
-        next.fileName = doc.fileName || preparedFile.name;
-        next.mimetype = doc.mimetype || preparedFile.contentType || 'application/octet-stream';
-    }
-    return next;
-};
-
-const buildNewsletterImageJpegRetryContent = async (content = {}, preparedFile = {}) => {
-    const [kind, media] = getNewsletterMediaField(content);
-    if (kind !== 'image' || !media) {
-        return null;
-    }
-    const mediaBuffer = Buffer.isBuffer(media)
-        ? media
-        : (media instanceof Uint8Array
-            ? Buffer.from(media)
-            : await downloadNewsletterAttachmentBuffer(
-                (typeof media?.url === 'string' && media.url)
-                || (typeof preparedFile?.url === 'string' && preparedFile.url)
-                || '',
-            ));
-    if (!mediaBuffer?.length) {
-        return null;
-    }
-    const normalizedMime = typeof content?.mimetype === 'string'
-        ? content.mimetype.split(';')[0].trim().toLowerCase()
-        : '';
-    if (normalizedMime === 'image/jpeg' && Buffer.isBuffer(media)) {
-        return null;
-    }
-    try {
-        const jimp = await import('jimp');
-        if (typeof jimp?.Jimp?.read !== 'function') {
-            return null;
-        }
-        const image = await jimp.Jimp.read(mediaBuffer);
-        const jpegBuffer = await image.getBuffer('image/jpeg', { quality: 90 });
-        if (!jpegBuffer?.length) {
-            return null;
-        }
-        return {
-            ...content,
-            image: jpegBuffer,
-            mimetype: 'image/jpeg',
-        };
-    } catch (err) {
-        state.logger?.debug?.({
-            err,
-            attachmentName: preparedFile?.name || null,
-        }, 'Failed to convert newsletter image attachment to JPEG for retry');
-        return null;
-    }
-};
-
 const guessAttachmentExtension = (value = '') => {
     if (typeof value !== 'string') return null;
     const trimmed = value.trim();
@@ -606,22 +475,6 @@ const summarizeNewsletterContentForDebug = (content = {}) => {
         mimetype: typeof content?.mimetype === 'string' ? content.mimetype : null,
         fileName: typeof content?.fileName === 'string' ? content.fileName : null,
     };
-};
-
-const buildNewsletterDocumentFallbackContent = (content = {}, preparedFile = {}) => {
-    const [kind, media] = getNewsletterMediaField(content);
-    if (!kind || !media || kind === 'document') {
-        return null;
-    }
-    const fallback = {
-        document: media,
-        fileName: preparedFile?.name || content?.fileName || 'attachment.bin',
-        mimetype: preparedFile?.contentType || content?.mimetype || 'application/octet-stream',
-    };
-    if (typeof content?.caption === 'string' && content.caption) {
-        fallback.caption = content.caption;
-    }
-    return fallback;
 };
 
 const buildNewsletterActionKey = ({ remoteJid, actionId, fromMe = true } = {}) => {
@@ -2623,186 +2476,30 @@ const connectToWhatsApp = async (retry = 1) => {
                     if (captionText || mentionJids.length) doc.caption = captionText;
                     if (!newsletterChat && mentionJids.length) doc.mentions = mentionJids;
                 }
-                let sentAttachment = false;
-                const attachmentVariants = [
-                    { label: 'native', content: doc },
-                ];
-                const documentFallback = newsletterChat
-                    ? buildNewsletterDocumentFallbackContent(doc, preparedFile)
-                    : null;
-                if (documentFallback) {
-                    attachmentVariants.push({
-                        label: 'document-fallback',
-                        content: documentFallback,
+                try {
+                    const { ackErrorCode } = await sendTrackedMessage(
+                        doc,
+                        first ? options : undefined,
+                        {
+                            ackContext: 'Newsletter attachment send',
+                            forceNewsletterAck: newsletterChat,
+                        },
+                    );
+                    if (!ackErrorCode) {
+                        sentAnyAttachment = true;
+                    }
+                } catch (err) {
+                    state.logger?.error(err);
+                    noteNewsletterMessageDebug({
+                        discordMessageId: message.id,
+                        jid: targetJid,
+                        operation: 'Newsletter attachment send',
+                        phase: 'send_error',
+                        details: {
+                            attachmentName: preparedFile?.name || null,
+                            error: normalizeBridgeMessageId(err?.output?.statusCode || err?.statusCode || err?.code || err?.message || 'send_error'),
+                        },
                     });
-                }
-
-                for (const variant of attachmentVariants) {
-                    let attachmentContent = variant.content;
-                    let didBufferRetry = false;
-                    let didJpegRetry = false;
-                    while (!sentAttachment) {
-                        const contentSummary = summarizeNewsletterContentForDebug(attachmentContent);
-                        noteNewsletterMessageDebug({
-                            discordMessageId: message.id,
-                            jid: targetJid,
-                            operation: 'Newsletter attachment send',
-                            phase: 'variant_attempt',
-                            details: {
-                                variant: variant.label,
-                                attachmentName: preparedFile?.name || null,
-                                ...contentSummary,
-                            },
-                        });
-                        try {
-                            const { ackErrorCode } = await sendTrackedMessage(
-                                attachmentContent,
-                                first ? options : undefined,
-                                {
-                                    ackContext: 'Newsletter attachment send',
-                                    forceNewsletterAck: newsletterChat,
-                                },
-                            );
-                            if (!ackErrorCode) {
-                                sentAnyAttachment = true;
-                                sentAttachment = true;
-                                break;
-                            }
-                            if (!newsletterChat) {
-                                break;
-                            }
-                            if (!didBufferRetry) {
-                                const bufferRetryContent = await buildNewsletterBufferRetryContent(attachmentContent, preparedFile);
-                                if (bufferRetryContent) {
-                                    didBufferRetry = true;
-                                    attachmentContent = bufferRetryContent;
-                                    noteNewsletterMessageDebug({
-                                        discordMessageId: message.id,
-                                        jid: targetJid,
-                                        operation: 'Newsletter attachment send',
-                                        phase: 'retry_buffer_after_ack',
-                                        details: {
-                                            variant: variant.label,
-                                            attachmentName: preparedFile?.name || null,
-                                        },
-                                    });
-                                    state.logger?.warn?.({
-                                        jid: targetJid,
-                                        discordMessageId: message.id,
-                                        attachmentName: preparedFile?.name,
-                                        variant: variant.label,
-                                    }, 'Retrying newsletter attachment with buffer payload after ack rejection');
-                                    continue;
-                                }
-                            }
-                            if (!didJpegRetry) {
-                                const jpegRetryContent = await buildNewsletterImageJpegRetryContent(attachmentContent, preparedFile);
-                                if (jpegRetryContent) {
-                                    didJpegRetry = true;
-                                    attachmentContent = jpegRetryContent;
-                                    noteNewsletterMessageDebug({
-                                        discordMessageId: message.id,
-                                        jid: targetJid,
-                                        operation: 'Newsletter attachment send',
-                                        phase: 'retry_jpeg_after_ack',
-                                        details: {
-                                            variant: variant.label,
-                                            attachmentName: preparedFile?.name || null,
-                                        },
-                                    });
-                                    state.logger?.warn?.({
-                                        jid: targetJid,
-                                        discordMessageId: message.id,
-                                        attachmentName: preparedFile?.name,
-                                        variant: variant.label,
-                                    }, 'Retrying newsletter image attachment as JPEG payload after ack rejection');
-                                    continue;
-                                }
-                            }
-                            break;
-                        } catch (err) {
-                            if (!newsletterChat) {
-                                state.logger?.error(err);
-                                noteNewsletterMessageDebug({
-                                    discordMessageId: message.id,
-                                    jid: targetJid,
-                                    operation: 'Newsletter attachment send',
-                                    phase: 'send_error',
-                                    details: {
-                                        variant: variant.label,
-                                        attachmentName: preparedFile?.name || null,
-                                        error: normalizeBridgeMessageId(err?.output?.statusCode || err?.statusCode || err?.code || err?.message || 'send_error'),
-                                    },
-                                });
-                                break;
-                            }
-                            if (!didBufferRetry) {
-                                const bufferRetryContent = await buildNewsletterBufferRetryContent(attachmentContent, preparedFile);
-                                if (bufferRetryContent) {
-                                    didBufferRetry = true;
-                                    attachmentContent = bufferRetryContent;
-                                    noteNewsletterMessageDebug({
-                                        discordMessageId: message.id,
-                                        jid: targetJid,
-                                        operation: 'Newsletter attachment send',
-                                        phase: 'retry_buffer_after_send_error',
-                                        details: {
-                                            variant: variant.label,
-                                            attachmentName: preparedFile?.name || null,
-                                        },
-                                    });
-                                    state.logger?.warn?.({
-                                        err,
-                                        jid: targetJid,
-                                        discordMessageId: message.id,
-                                        attachmentName: preparedFile?.name,
-                                        variant: variant.label,
-                                    }, 'Retrying newsletter attachment with buffer payload after send failure');
-                                    continue;
-                                }
-                            }
-                            if (!didJpegRetry) {
-                                const jpegRetryContent = await buildNewsletterImageJpegRetryContent(attachmentContent, preparedFile);
-                                if (jpegRetryContent) {
-                                    didJpegRetry = true;
-                                    attachmentContent = jpegRetryContent;
-                                    noteNewsletterMessageDebug({
-                                        discordMessageId: message.id,
-                                        jid: targetJid,
-                                        operation: 'Newsletter attachment send',
-                                        phase: 'retry_jpeg_after_send_error',
-                                        details: {
-                                            variant: variant.label,
-                                            attachmentName: preparedFile?.name || null,
-                                        },
-                                    });
-                                    state.logger?.warn?.({
-                                        err,
-                                        jid: targetJid,
-                                        discordMessageId: message.id,
-                                        attachmentName: preparedFile?.name,
-                                        variant: variant.label,
-                                    }, 'Retrying newsletter image attachment as JPEG payload after send failure');
-                                    continue;
-                                }
-                            }
-                            state.logger?.error(err);
-                            noteNewsletterMessageDebug({
-                                discordMessageId: message.id,
-                                jid: targetJid,
-                                operation: 'Newsletter attachment send',
-                                phase: 'send_error_no_retry',
-                                details: {
-                                    variant: variant.label,
-                                    attachmentName: preparedFile?.name || null,
-                                },
-                            });
-                            break;
-                        }
-                    }
-                    if (sentAttachment) {
-                        break;
-                    }
                 }
                 if (first) {
                     first = false;
