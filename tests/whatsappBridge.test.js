@@ -7,6 +7,7 @@ import { resetClientFactoryOverrides, setClientFactoryOverrides } from '../src/c
 import state from '../src/state.js';
 import storage from '../src/storage.js';
 import utils from '../src/utils.js';
+import messageStore from '../src/messageStore.js';
 
 await storage.ensureInitialized();
 
@@ -506,12 +507,82 @@ test('Discord newsletter deletes use normalized server ids', async () => {
   }
 });
 
+test('Newsletter edit/reaction/delete wait for server ids before sending actions', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  try {
+    const notices = [];
+    state.lastMessages['dc-news-edit-wait'] = '3EBEDITCLIENTID';
+    state.lastMessages['dc-news-react-wait'] = '3EBREACTCLIENTID';
+    state.lastMessages['dc-news-delete-wait'] = '3EBDELETECLIENTID';
+
+    setTimeout(() => {
+      state.lastMessages['server-edit-1'] = 'dc-news-edit-wait';
+      state.lastMessages['dc-news-edit-wait'] = 'server-edit-1';
+
+      state.lastMessages['server-react-1'] = 'dc-news-react-wait';
+      state.lastMessages['dc-news-react-wait'] = 'server-react-1';
+
+      state.lastMessages['server-delete-1'] = 'dc-news-delete-wait';
+      state.lastMessages['dc-news-delete-wait'] = 'server-delete-1';
+    }, 120);
+
+    harness.fakeClient.ev.emit('discordEdit', {
+      jid: '1203630@newsletter',
+      message: {
+        id: 'dc-news-edit-wait',
+        cleanContent: 'edited',
+        content: 'edited',
+        webhookId: null,
+        author: { username: 'You' },
+        channel: { send: async (value) => { notices.push(value); } },
+      },
+    });
+
+    harness.fakeClient.ev.emit('discordReaction', {
+      jid: '1203630@newsletter',
+      removed: false,
+      reaction: {
+        emoji: { name: '🔥' },
+        message: {
+          id: 'dc-news-react-wait',
+          webhookId: null,
+          author: { username: 'You' },
+          channel: { send: async (value) => { notices.push(value); } },
+        },
+      },
+    });
+
+    harness.fakeClient.ev.emit('discordDelete', {
+      jid: '1203630@newsletter',
+      id: '3EBDELETECLIENTID',
+      discordMessageId: 'dc-news-delete-wait',
+    });
+
+    await delay(450);
+
+    assert.equal(notices.length, 0);
+    const editCall = harness.fakeClient.sendCalls.find((call) => call.content?.edit);
+    assert.ok(editCall);
+    assert.equal(editCall?.content?.edit?.id, 'server-edit-1');
+
+    assert.equal(harness.fakeClient.newsletterReactionCalls.length, 1);
+    assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.serverId, 'server-react-1');
+
+    const deleteCall = harness.fakeClient.sendCalls.find((call) => call.content?.delete);
+    assert.ok(deleteCall);
+    assert.equal(deleteCall?.content?.delete?.id, 'server-delete-1');
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test('Discord newsletter sends use normalized JIDs and map server IDs', async () => {
   const harness = await setupWhatsAppHarness({
     oneWay: 0b11,
     formatJid: (jid) => (typeof jid === 'string' ? jid.trim() : jid),
   });
   try {
+    messageStore.clear();
     harness.fakeClient.ev.emit('discordMessage', {
       jid: '1203630@newsletter   ',
       message: {
@@ -535,7 +606,10 @@ test('Discord newsletter sends use normalized JIDs and map server IDs', async ()
     assert.equal(harness.fakeClient.sendCalls[0]?.jid, '1203630@newsletter');
     assert.equal(state.lastMessages['dc-news-send'], 'server-1');
     assert.equal(state.lastMessages['server-1'], 'dc-news-send');
+    assert.ok(messageStore.get({ remoteJid: '1203630@newsletter', id: 'sent-1' }));
+    assert.ok(messageStore.get({ remoteJid: '1203630@newsletter', id: 'server-1' }));
   } finally {
+    messageStore.clear();
     harness.cleanup();
   }
 });
@@ -1097,14 +1171,13 @@ test('Discord forwarded snapshots resolve user and role mentions from raw tokens
   }
 });
 
-test('Discord replies to newsletter chats skip WhatsApp quote lookup', async () => {
+test('Discord replies to newsletter chats attempt WhatsApp quote lookup', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
   try {
-    const channelWarnings = [];
     let quoteAttempts = 0;
     utils.whatsapp.createQuoteMessage = async () => {
       quoteAttempts += 1;
-      return null;
+      return { key: { id: 'wa-quote-1' } };
     };
 
     harness.fakeClient.ev.emit('discordMessage', {
@@ -1117,7 +1190,7 @@ test('Discord replies to newsletter chats skip WhatsApp quote lookup', async () 
         webhookId: null,
         author: { username: 'BridgeUser' },
         member: { displayName: 'BridgeUser' },
-        channel: { send: async (value) => { channelWarnings.push(value); } },
+        channel: { send: async () => {} },
         attachments: new Map(),
         stickers: new Map(),
         embeds: [],
@@ -1127,10 +1200,59 @@ test('Discord replies to newsletter chats skip WhatsApp quote lookup', async () 
 
     await delay(0);
 
-    assert.equal(quoteAttempts, 0);
-    assert.equal(channelWarnings.length, 0);
+    assert.equal(quoteAttempts, 1);
     assert.equal(harness.fakeClient.sendCalls.length, 1);
     assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, 'newsletter post');
+    assert.ok(harness.fakeClient.sendCalls[0]?.options?.quoted);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('Newsletter replies without quote mapping include fallback reply context text', async () => {
+  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  try {
+    utils.whatsapp.createQuoteMessage = async () => null;
+
+    harness.fakeClient.ev.emit('discordMessage', {
+      jid: '120363123456789@newsletter',
+      message: {
+        id: 'dc-newsletter-reply-fallback',
+        content: 'newsletter post',
+        cleanContent: 'newsletter post',
+        reference: { channelId: 'chan-1', messageId: 'msg-1' },
+        webhookId: null,
+        author: { username: 'BridgeUser' },
+        member: { displayName: 'BridgeUser' },
+        channel: { send: async () => {} },
+        attachments: new Map(),
+        stickers: new Map(),
+        embeds: [],
+        mentions: { users: new Map(), members: new Map(), roles: new Map() },
+        client: {
+          channels: {
+            fetch: async () => ({
+              messages: {
+                fetch: async () => ({
+                  content: 'Original replied message body',
+                  cleanContent: 'Original replied message body',
+                  author: { username: 'ReplyUser' },
+                  member: { displayName: 'ReplyUser' },
+                  attachments: new Map(),
+                }),
+              },
+            }),
+          },
+        },
+      },
+    });
+
+    await delay(0);
+
+    assert.equal(harness.fakeClient.sendCalls.length, 1);
+    const sentText = harness.fakeClient.sendCalls[0]?.content?.text || '';
+    assert.ok(sentText.includes('Replying to ReplyUser: Original replied message body'));
+    assert.ok(sentText.includes('newsletter post'));
   } finally {
     harness.cleanup();
   }

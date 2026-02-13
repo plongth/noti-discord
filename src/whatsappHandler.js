@@ -18,6 +18,14 @@ import messageStore from './messageStore.js';
 import { createGroupRefreshScheduler } from './groupMetadataRefresh.js';
 import { getPollEncKey, getPollOptions } from './pollUtils.js';
 import { oneWayAllowsDiscordToWhatsApp } from './oneWay.js';
+import {
+    getNewsletterServerIdFromMessage,
+    isLikelyNewsletterServerId,
+    normalizeBridgeMessageId,
+    noteNewsletterAckError,
+    waitForNewsletterAckError,
+    waitForNewsletterServerId,
+} from './newsletterBridge.js';
 let authState;
 let saveState;
 let groupCachePruneInterval = null;
@@ -132,6 +140,8 @@ const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$
 const isBroadcastJid = (jid = '') => typeof jid === 'string' && jid.endsWith('@broadcast');
 const isNewsletterJid = (jid = '') => typeof jid === 'string' && jid.endsWith('@newsletter');
 const normalizeSendJid = (jid) => utils.whatsapp.formatJid(jid) || jid;
+const NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS = 8000;
+const NEWSLETTER_SERVER_ID_WAIT_POLL_MS = 150;
 const DISCORD_ATTACHMENT_MIME_BY_EXTENSION = {
     gif: 'image/gif',
     jpg: 'image/jpeg',
@@ -209,23 +219,9 @@ const buildSendOptionsForJid = (jid) => {
     const normalizedJid = normalizeSendJid(jid);
     return isBroadcastJid(normalizedJid) ? { broadcast: true } : {};
 };
-const getNewsletterServerIdFromMessage = (message) => {
-    const candidates = [
-        message?.key?.server_id,
-        message?.key?.serverId,
-        message?.messageServerID,
-        message?.server_id,
-        message?.serverId,
-    ];
-    for (const candidate of candidates) {
-        const normalized = typeof candidate === 'string' ? candidate.trim() : String(candidate || '').trim();
-        if (normalized) return normalized;
-    }
-    return null;
-};
 const mapDiscordMessageToWhatsAppMessage = ({ discordMessageId, sentMessage, isNewsletter = false }) => {
     const outboundIdRaw = sentMessage?.key?.id;
-    const outboundId = typeof outboundIdRaw === 'string' ? outboundIdRaw.trim() : String(outboundIdRaw || '').trim();
+    const outboundId = normalizeBridgeMessageId(outboundIdRaw);
     const serverId = isNewsletter ? getNewsletterServerIdFromMessage(sentMessage) : null;
     const preferredId = serverId || outboundId || null;
     if (!discordMessageId || !preferredId) return;
@@ -242,95 +238,11 @@ const mapDiscordMessageToWhatsAppMessage = ({ discordMessageId, sentMessage, isN
     }
 };
 
-const NEWSLETTER_ACK_ERROR_TTL_MS = 30 * 1000;
-const NEWSLETTER_ACK_WAIT_MS = 900;
-const newsletterAckErrors = new Map();
-const newsletterAckWaiters = new Map();
-
-const normalizeMessageId = (value) => {
-    if (typeof value === 'string') return value.trim();
-    if (typeof value === 'number') return String(value);
-    return String(value || '').trim();
-};
-
-const isLikelyNewsletterServerId = (value) => {
-    const normalized = normalizeMessageId(value);
-    if (!normalized) return false;
-    if (/^\d+$/.test(normalized)) return true;
-    if (/^(3EB|BAE5)/i.test(normalized)) return false;
-    if (/^[A-F0-9]{16,}$/i.test(normalized)) return false;
-    return true;
-};
-
-const pruneNewsletterAckErrors = () => {
-    const cutoff = Date.now() - NEWSLETTER_ACK_ERROR_TTL_MS;
-    for (const [messageId, payload] of newsletterAckErrors.entries()) {
-        if (!payload || payload.timestamp < cutoff) {
-            newsletterAckErrors.delete(messageId);
-        }
-    }
-};
-
-const resolveNewsletterAckWaiters = (messageId, errorCode) => {
-    const waiters = newsletterAckWaiters.get(messageId);
-    if (!waiters?.size) return;
-    newsletterAckWaiters.delete(messageId);
-    for (const resolve of waiters) {
-        try {
-            resolve(errorCode);
-        } catch {
-            continue;
-        }
-    }
-};
-
-const noteNewsletterAckError = ({ messageId, jid, errorCode }) => {
-    const normalizedMessageId = normalizeMessageId(messageId);
-    if (!normalizedMessageId) return;
-    const normalizedError = normalizeMessageId(errorCode) || 'unknown';
-    pruneNewsletterAckErrors();
-    newsletterAckErrors.set(normalizedMessageId, {
-        errorCode: normalizedError,
-        jid: normalizeSendJid(jid),
-        timestamp: Date.now(),
-    });
-    resolveNewsletterAckWaiters(normalizedMessageId, normalizedError);
-};
-
-const waitForNewsletterAckError = async (messageId, timeoutMs = NEWSLETTER_ACK_WAIT_MS) => {
-    const normalizedMessageId = normalizeMessageId(messageId);
-    if (!normalizedMessageId) return null;
-    pruneNewsletterAckErrors();
-    const cached = newsletterAckErrors.get(normalizedMessageId);
-    if (cached?.errorCode) {
-        return cached.errorCode;
-    }
-    return await new Promise((resolve) => {
-        const existing = newsletterAckWaiters.get(normalizedMessageId) || new Set();
-        const settle = (errorCode = null) => {
-            clearTimeout(timer);
-            existing.delete(settle);
-            if (existing.size) {
-                newsletterAckWaiters.set(normalizedMessageId, existing);
-            } else {
-                newsletterAckWaiters.delete(normalizedMessageId);
-            }
-            resolve(errorCode || null);
-        };
-        existing.add(settle);
-        newsletterAckWaiters.set(normalizedMessageId, existing);
-        const timer = setTimeout(() => settle(null), timeoutMs);
-        if (typeof timer?.unref === 'function') {
-            timer.unref();
-        }
-    });
-};
-
 const clearFailedNewsletterMapping = ({ discordMessageId, sentMessage }) => {
-    const normalizedDiscordMessageId = normalizeMessageId(discordMessageId);
+    const normalizedDiscordMessageId = normalizeBridgeMessageId(discordMessageId);
     if (!normalizedDiscordMessageId) return;
-    const outboundId = normalizeMessageId(sentMessage?.key?.id);
-    const serverId = normalizeMessageId(getNewsletterServerIdFromMessage(sentMessage));
+    const outboundId = normalizeBridgeMessageId(sentMessage?.key?.id);
+    const serverId = normalizeBridgeMessageId(getNewsletterServerIdFromMessage(sentMessage));
     const removeIfMatches = (key) => {
         if (!key) return;
         if (state.lastMessages[key] === normalizedDiscordMessageId) {
@@ -350,12 +262,12 @@ const clearFailedNewsletterMapping = ({ discordMessageId, sentMessage }) => {
 };
 
 const mapNewsletterServerIdFromOutbound = ({ outboundId, serverId }) => {
-    const normalizedOutboundId = normalizeMessageId(outboundId);
-    const normalizedServerId = normalizeMessageId(serverId);
+    const normalizedOutboundId = normalizeBridgeMessageId(outboundId);
+    const normalizedServerId = normalizeBridgeMessageId(serverId);
     if (!normalizedOutboundId || !normalizedServerId || normalizedOutboundId === normalizedServerId) {
         return null;
     }
-    const discordMessageId = normalizeMessageId(state.lastMessages[normalizedOutboundId]);
+    const discordMessageId = normalizeBridgeMessageId(state.lastMessages[normalizedOutboundId]);
     if (!discordMessageId) {
         return null;
     }
@@ -363,25 +275,6 @@ const mapNewsletterServerIdFromOutbound = ({ outboundId, serverId }) => {
     state.lastMessages[normalizedServerId] = discordMessageId;
     state.sentMessages.add(normalizedServerId);
     return normalizedServerId;
-};
-
-const resolveNewsletterServerIdForDiscordMessage = ({ discordMessageId, candidateId = null }) => {
-    const normalizedCandidateId = normalizeMessageId(candidateId);
-    if (isLikelyNewsletterServerId(normalizedCandidateId)) {
-        return normalizedCandidateId;
-    }
-    const normalizedDiscordMessageId = normalizeMessageId(discordMessageId)
-        || normalizeMessageId(state.lastMessages[normalizedCandidateId]);
-    if (!normalizedDiscordMessageId) {
-        return normalizedCandidateId || null;
-    }
-    for (const [waId, dcId] of Object.entries(state.lastMessages)) {
-        if (normalizeMessageId(dcId) !== normalizedDiscordMessageId) continue;
-        if (isLikelyNewsletterServerId(waId)) {
-            return normalizeMessageId(waId);
-        }
-    }
-    return normalizedCandidateId || null;
 };
 
 const toMentionLabel = (value) => {
@@ -412,6 +305,64 @@ const replaceLiteralMentionTokens = (text, replacements = []) => {
 const DISCORD_USER_MENTION_REGEX = /<@!?(\d+)>/g;
 const DISCORD_ROLE_MENTION_REGEX = /<@&(\d+)>/g;
 const DISCORD_REPLY_PREFIX_REGEX = /^(<@!?\d+>|@\S+)\s*/;
+const DISCORD_REPLY_FALLBACK_MAX_CHARS = 160;
+
+const formatReplyFallbackText = (value = '') => String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, DISCORD_REPLY_FALLBACK_MAX_CHARS);
+
+const prependReplyFallbackContext = (text, replyContext) => {
+    if (!replyContext) return text || '';
+    if (!text) return replyContext;
+    return `${replyContext}\n${text}`;
+};
+
+const buildNewsletterReplyFallbackContext = async (message) => {
+    const channelId = message?.reference?.channelId;
+    const messageId = message?.reference?.messageId;
+    if (!channelId || !messageId) {
+        return null;
+    }
+    try {
+        const channel = await message?.client?.channels?.fetch?.(channelId);
+        const repliedMessage = await channel?.messages?.fetch?.(messageId);
+        const author = repliedMessage?.member?.displayName
+            || repliedMessage?.author?.globalName
+            || repliedMessage?.author?.username
+            || 'Unknown';
+        const rawText = repliedMessage?.cleanContent || repliedMessage?.content || '';
+        const fallbackText = formatReplyFallbackText(rawText)
+            || (repliedMessage?.attachments?.size ? '[attachment]' : '[message]');
+        return `Replying to ${author}: ${fallbackText}`;
+    } catch {
+        return `Replying to message ${messageId}`;
+    }
+};
+
+const cloneNewsletterSendContentWithReplyFallback = (content = {}, replyContext = '') => {
+    if (!replyContext || !content || typeof content !== 'object') {
+        return content;
+    }
+    const next = { ...content };
+    if (typeof next.text === 'string') {
+        next.text = prependReplyFallbackContext(next.text, replyContext);
+        return next;
+    }
+    if (typeof next.caption === 'string') {
+        next.caption = prependReplyFallbackContext(next.caption, replyContext);
+        return next;
+    }
+    next.caption = prependReplyFallbackContext('', replyContext);
+    return next;
+};
+
+const notifyLinkedDiscordChannel = async (jid, text) => {
+    const channelId = state.chats[jid]?.channelId;
+    if (!channelId || !text) return;
+    const channel = await utils.discord.getChannel(channelId).catch(() => null);
+    await channel?.send?.(text).catch(() => {});
+};
 
 const extractMentionIdsFromText = (text, regex) => {
     const ids = new Set();
@@ -681,7 +632,23 @@ const storeMessage = (message) => {
         remoteJid: utils.whatsapp.formatJid(message.key.remoteJid),
         participant: utils.whatsapp.formatJid(message.key.participant || message.key.participantAlt),
     };
-    messageStore.set({ ...message, key: normalizedKey });
+    const normalizedMessage = { ...message, key: normalizedKey };
+    messageStore.set(normalizedMessage);
+
+    const serverId = normalizeBridgeMessageId(getNewsletterServerIdFromMessage(normalizedMessage));
+    if (
+        isNewsletterJid(normalizedKey.remoteJid || '')
+        && serverId
+        && serverId !== normalizedKey.id
+    ) {
+        messageStore.set({
+            ...normalizedMessage,
+            key: {
+                ...normalizedKey,
+                id: serverId,
+            },
+        });
+    }
 };
 
 const cacheGroupMetadata = (metadata, client) => {
@@ -966,9 +933,9 @@ const connectToWhatsApp = async (retry = 1) => {
     client.ev.on('messages.upsert', async (update) => {
         if (['notify', 'append'].includes(update.type)) {
             for await (const rawMessage of update.messages) {
-                const messageId = normalizeMessageId(utils.whatsapp.getId(rawMessage));
-                const outboundId = normalizeMessageId(rawMessage?.key?.id);
-                const serverId = normalizeMessageId(getNewsletterServerIdFromMessage(rawMessage));
+                const messageId = normalizeBridgeMessageId(utils.whatsapp.getId(rawMessage));
+                const outboundId = normalizeBridgeMessageId(rawMessage?.key?.id);
+                const serverId = normalizeBridgeMessageId(getNewsletterServerIdFromMessage(rawMessage));
                 const remoteJid = normalizeSendJid(rawMessage?.key?.remoteJid || rawMessage?.chatId || rawMessage?.attrs?.from);
                 const newsletterChat = isNewsletterJid(remoteJid);
                 const sentCandidates = [...new Set([messageId, outboundId, serverId].filter(Boolean))];
@@ -1166,7 +1133,7 @@ const connectToWhatsApp = async (retry = 1) => {
                 const [errorCodeRaw] = Array.isArray(update?.messageStubParameters)
                     ? update.messageStubParameters
                     : [];
-                const errorCode = normalizeMessageId(errorCodeRaw) || 'unknown';
+                const errorCode = normalizeBridgeMessageId(errorCodeRaw) || 'unknown';
                 noteNewsletterAckError({
                     messageId: key?.id,
                     jid: normalizedRemoteJid,
@@ -1334,16 +1301,22 @@ const connectToWhatsApp = async (retry = 1) => {
         const targetJid = normalizeSendJid(jid);
         const isNewsletterChat = isNewsletterJid(targetJid);
         const isForwardedFromDiscord = Boolean(forwardContext?.isForwarded);
+        const hasReplyReference = !isForwardedFromDiscord && Boolean(message.reference);
         const options = buildSendOptionsForJid(targetJid);
         const forwardSnapshot = isForwardedFromDiscord && message?.wa2dcForwardSnapshot
             ? message.wa2dcForwardSnapshot
             : null;
         const snapshotEmbeds = Array.isArray(forwardSnapshot?.embeds) ? forwardSnapshot.embeds : [];
+        let newsletterReplyFallbackContext = '';
 
-        if (!isForwardedFromDiscord && message.reference && !isNewsletterChat) {
+        if (hasReplyReference) {
             options.quoted = await utils.whatsapp.createQuoteMessage(message, targetJid);
             if (options.quoted == null) {
-                message.channel.send(`Couldn't find the message quoted. You can only reply to last ${state.settings.lastMessageStorage} messages. Sending the message without the quoted message.`);
+                if (isNewsletterChat) {
+                    newsletterReplyFallbackContext = await buildNewsletterReplyFallbackContext(message) || '';
+                } else {
+                    message.channel.send(`Couldn't find the message quoted. You can only reply to last ${state.settings.lastMessageStorage} messages. Sending the message without the quoted message.`);
+                }
             }
         }
 
@@ -1375,7 +1348,6 @@ const connectToWhatsApp = async (retry = 1) => {
         if (embedText) {
             text = text ? `${text}\n${embedText}` : embedText;
         }
-        const hasReplyReference = !isForwardedFromDiscord && message.reference;
         if (hasReplyReference) {
             text = text.replace(DISCORD_REPLY_PREFIX_REGEX, '');
         }
@@ -1470,6 +1442,35 @@ const connectToWhatsApp = async (retry = 1) => {
         });
         text = mentionResolution.text;
         const mentionJids = mentionResolution.mentionJids;
+        const ensureNewsletterReplyFallbackContext = async () => {
+            if (!isNewsletterChat || !hasReplyReference) return '';
+            if (newsletterReplyFallbackContext) return newsletterReplyFallbackContext;
+            newsletterReplyFallbackContext = await buildNewsletterReplyFallbackContext(message) || '';
+            return newsletterReplyFallbackContext;
+        };
+        const sendWithNewsletterQuoteFallback = async (content, sendOptions) => {
+            try {
+                return await client.sendMessage(targetJid, content, sendOptions);
+            } catch (err) {
+                if (!isNewsletterChat || !sendOptions?.quoted) {
+                    throw err;
+                }
+                const replyContext = await ensureNewsletterReplyFallbackContext();
+                const retryContent = cloneNewsletterSendContentWithReplyFallback(content, replyContext);
+                const retryOptions = { ...sendOptions };
+                delete retryOptions.quoted;
+                state.logger?.warn?.({
+                    err,
+                    jid: targetJid,
+                    discordMessageId: message?.id,
+                }, 'Retrying newsletter send without quoted context');
+                return await client.sendMessage(
+                    targetJid,
+                    retryContent,
+                    Object.keys(retryOptions).length ? retryOptions : undefined,
+                );
+            }
+        };
 
         if (shouldSendAttachments) {
             let first = true;
@@ -1485,11 +1486,15 @@ const connectToWhatsApp = async (retry = 1) => {
                     if (isForwardedFromDiscord) {
                         captionText = captionText ? `Forwarded\n${captionText}` : 'Forwarded';
                     }
+                    if (isNewsletterChat && hasReplyReference && !options.quoted) {
+                        const replyContext = await ensureNewsletterReplyFallbackContext();
+                        captionText = prependReplyFallbackContext(captionText, replyContext);
+                    }
                     if (captionText || mentionJids.length) doc.caption = captionText;
                     if (!isNewsletterChat && mentionJids.length) doc.mentions = mentionJids;
                 }
                 try {
-                    const sentMessage = await client.sendMessage(targetJid, doc, first ? options : undefined);
+                    const sentMessage = await sendWithNewsletterQuoteFallback(doc, first ? options : undefined);
                     mapDiscordMessageToWhatsAppMessage({
                         discordMessageId: message.id,
                         sentMessage,
@@ -1544,6 +1549,10 @@ const connectToWhatsApp = async (retry = 1) => {
         if (isForwardedFromDiscord) {
             finalText = finalText ? `Forwarded\n${finalText}` : 'Forwarded';
         }
+        if (isNewsletterChat && hasReplyReference && !options.quoted) {
+            const replyContext = await ensureNewsletterReplyFallbackContext();
+            finalText = prependReplyFallbackContext(finalText, replyContext);
+        }
         if (!finalText) {
             return;
         }
@@ -1569,7 +1578,7 @@ const connectToWhatsApp = async (retry = 1) => {
         }
 
         try {
-            const sent = await client.sendMessage(targetJid, content, options);
+            const sent = await sendWithNewsletterQuoteFallback(content, options);
             mapDiscordMessageToWhatsAppMessage({
                 discordMessageId: message.id,
                 sentMessage: sent,
@@ -1598,13 +1607,39 @@ const connectToWhatsApp = async (retry = 1) => {
             return;
         }
 
+        const targetJid = normalizeSendJid(jid);
+        const newsletterChat = isNewsletterJid(targetJid);
+        let messageId = state.lastMessages[message.id];
+        if (newsletterChat) {
+            const resolvedServerId = await waitForNewsletterServerId({
+                discordMessageId: message.id,
+                candidateId: messageId,
+                timeoutMs: NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS,
+                pollMs: NEWSLETTER_SERVER_ID_WAIT_POLL_MS,
+            });
+            if (!resolvedServerId) {
+                state.logger?.warn?.({
+                    jid: targetJid,
+                    discordMessageId: message?.id,
+                    candidateId: messageId,
+                }, 'Timed out waiting for newsletter server ID before edit');
+                await message.channel.send(
+                    "Couldn't edit this newsletter message yet because a server message ID is still unavailable.",
+                ).catch(() => {});
+                return;
+            }
+            messageId = resolvedServerId;
+            state.lastMessages[message.id] = resolvedServerId;
+            state.lastMessages[resolvedServerId] = message.id;
+        }
+
         const key = {
-            id: state.lastMessages[message.id],
+            id: messageId,
             fromMe: message.webhookId == null || message.author.username === 'You',
-            remoteJid: jid,
+            remoteJid: targetJid,
         };
 
-        if (jid.endsWith('@g.us')) {
+        if (targetJid.endsWith('@g.us')) {
             key.participant = utils.whatsapp.toJid(message.author.username);
         }
 
@@ -1634,20 +1669,20 @@ const connectToWhatsApp = async (retry = 1) => {
         const mentionResolution = await resolveDiscordTextMentionsForWhatsApp({
             message,
             text,
-            jid,
+            jid: targetJid,
             textCandidates: mentionTextCandidates,
             replyMentionId,
         });
         text = mentionResolution.text;
         const editMentions = mentionResolution.mentionJids;
-        const editOptions = buildSendOptionsForJid(jid);
+        const editOptions = buildSendOptionsForJid(targetJid);
         try {
             const editMsg = await client.sendMessage(
-                jid,
+                targetJid,
                 {
                     text,
                     edit: key,
-                    ...(editMentions.length ? { mentions: editMentions } : {}),
+                    ...(!newsletterChat && editMentions.length ? { mentions: editMentions } : {}),
                 },
                 editOptions,
             );
@@ -1676,23 +1711,29 @@ const connectToWhatsApp = async (retry = 1) => {
         }
 
         if (newsletterChat) {
-            const serverId = resolveNewsletterServerIdForDiscordMessage({
+            const serverId = await waitForNewsletterServerId({
                 discordMessageId: reaction?.message?.id,
                 candidateId: key.id,
+                timeoutMs: NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS,
+                pollMs: NEWSLETTER_SERVER_ID_WAIT_POLL_MS,
             });
             if (!serverId) {
+                state.logger?.warn?.({
+                    jid: targetJid,
+                    discordMessageId: reaction?.message?.id,
+                    candidateId: key.id,
+                }, 'Timed out waiting for newsletter server ID before reaction');
+                await reaction?.message?.channel?.send(
+                    "Couldn't send that reaction yet because the newsletter server message ID is still unavailable.",
+                ).catch(() => {});
                 return;
             }
             if (typeof client.newsletterReactMessage !== 'function') {
                 state.logger?.warn?.({ jid: targetJid }, 'newsletterReactMessage is unavailable on this WhatsApp client');
                 return;
             }
-            if (!isLikelyNewsletterServerId(serverId)) {
-                await reaction?.message?.channel?.send(
-                    'Could not resolve a newsletter server message ID for this reaction yet. Please try again in a few seconds.',
-                ).catch(() => {});
-                return;
-            }
+            state.lastMessages[reaction.message.id] = serverId;
+            state.lastMessages[serverId] = reaction.message.id;
 
             try {
                 await client.newsletterReactMessage(targetJid, serverId, removed ? undefined : reaction.emoji.name);
@@ -1730,14 +1771,27 @@ const connectToWhatsApp = async (retry = 1) => {
 
         const targetJid = normalizeSendJid(jid);
         const isNewsletterChat = isNewsletterJid(targetJid);
-        const rawDeleteId = normalizeMessageId(id);
+        const rawDeleteId = normalizeBridgeMessageId(id);
         const deleteId = isNewsletterChat
-            ? resolveNewsletterServerIdForDiscordMessage({
+            ? await waitForNewsletterServerId({
                 discordMessageId,
                 candidateId: rawDeleteId,
+                timeoutMs: NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS,
+                pollMs: NEWSLETTER_SERVER_ID_WAIT_POLL_MS,
             })
             : rawDeleteId;
         if (!targetJid || !deleteId) {
+            if (isNewsletterChat) {
+                state.logger?.warn?.({
+                    jid: targetJid,
+                    discordMessageId,
+                    id,
+                }, 'Timed out waiting for newsletter server ID before delete');
+                await notifyLinkedDiscordChannel(
+                    targetJid,
+                    "Couldn't delete this newsletter message yet because a server message ID is still unavailable.",
+                );
+            }
             return;
         }
         if (isNewsletterChat && !isLikelyNewsletterServerId(deleteId)) {
@@ -1747,6 +1801,10 @@ const connectToWhatsApp = async (retry = 1) => {
                 id,
                 resolvedId: deleteId,
             }, 'Skipping newsletter delete because no server message id could be resolved');
+            await notifyLinkedDiscordChannel(
+                targetJid,
+                "Couldn't delete this newsletter message yet because a server message ID is still unavailable.",
+            );
             return;
         }
         const deleteOptions = buildSendOptionsForJid(targetJid);

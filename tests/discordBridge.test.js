@@ -480,6 +480,91 @@ test('Discord messageDelete in newsletter channels emits server_id mapped discor
   }
 });
 
+test('Discord messageDelete in newsletter channels waits for delayed server_id mapping', async () => {
+  const originalDiscordUtils = {
+    getGuild: utils.discord.getGuild,
+    getControlChannel: utils.discord.getControlChannel,
+    channelIdToJid: utils.discord.channelIdToJid,
+  };
+  const originalSettings = {
+    Token: state.settings.Token,
+    GuildID: state.settings.GuildID,
+  };
+  const originalDcClient = state.dcClient;
+  const originalWaClient = state.waClient;
+  const originalLastMessages = state.lastMessages;
+  const originalReactions = state.reactions;
+
+  try {
+    state.settings.Token = 'TEST_TOKEN';
+    state.settings.GuildID = 'guild';
+    state.lastMessages = {
+      '3EBDELAYEDCLIENTID': 'dc-news-delayed',
+      'dc-news-delayed': '3EBDELAYEDCLIENTID',
+    };
+    state.reactions = {};
+
+    utils.discord.getGuild = async () => ({ commands: { set: async () => {} } });
+    utils.discord.getControlChannel = async () => ({ send: async () => {} });
+    utils.discord.channelIdToJid = () => '120363123456789@newsletter';
+
+    const waEvents = [];
+    const waEv = new EventEmitter();
+    waEv.on('discordDelete', (payload) => waEvents.push(payload));
+    state.waClient = { ev: waEv };
+
+    class FakeDiscordClient extends EventEmitter {
+      constructor() {
+        super();
+        this.user = { id: 'bot-1' };
+      }
+
+      async login() {
+        queueMicrotask(() => this.emit('ready'));
+        return this;
+      }
+    }
+
+    const fakeClient = new FakeDiscordClient();
+    setClientFactoryOverrides({ createDiscordClient: () => fakeClient });
+    const discordHandler = await importDiscordHandler('newsletter-message-delete-wait-server-id');
+    state.dcClient = await discordHandler.start();
+
+    setTimeout(() => {
+      state.lastMessages['server-delayed-1'] = 'dc-news-delayed';
+      state.lastMessages['dc-news-delayed'] = 'server-delayed-1';
+    }, 120);
+
+    fakeClient.emit('messageDelete', {
+      id: 'dc-news-delayed',
+      channelId: 'chan-1',
+      webhookId: null,
+      author: { id: 'user-1' },
+      channel: { send: async () => {} },
+    });
+    await delay(500);
+
+    assert.deepEqual(waEvents, [{
+      jid: '120363123456789@newsletter',
+      id: 'server-delayed-1',
+      discordMessageId: 'dc-news-delayed',
+    }]);
+  } finally {
+    utils.discord.getGuild = originalDiscordUtils.getGuild;
+    utils.discord.getControlChannel = originalDiscordUtils.getControlChannel;
+    utils.discord.channelIdToJid = originalDiscordUtils.channelIdToJid;
+
+    state.settings.Token = originalSettings.Token;
+    state.settings.GuildID = originalSettings.GuildID;
+
+    state.dcClient = originalDcClient;
+    state.waClient = originalWaClient;
+    state.lastMessages = originalLastMessages;
+    state.reactions = originalReactions;
+    resetClientFactoryOverrides();
+  }
+});
+
 test('Discord pin system messages are not forwarded to WhatsApp', async () => {
   const originalDiscordUtils = {
     getGuild: utils.discord.getGuild,
@@ -1618,6 +1703,94 @@ test('Discord reactions emit discordReaction towards WhatsApp', async () => {
     state.dcClient = originalDcClient;
     state.waClient = originalWaClient;
     state.lastMessages = originalLastMessages;
+    resetClientFactoryOverrides();
+  }
+});
+
+test('Discord newsletter reactions wait for delayed server_id mapping', async () => {
+  const originalDiscordUtils = {
+    getGuild: utils.discord.getGuild,
+    getControlChannel: utils.discord.getControlChannel,
+    channelIdToJid: utils.discord.channelIdToJid,
+  };
+  const originalSettings = {
+    Token: state.settings.Token,
+    GuildID: state.settings.GuildID,
+  };
+  const originalDcClient = state.dcClient;
+  const originalWaClient = state.waClient;
+  const originalLastMessages = state.lastMessages;
+  const originalReactions = state.reactions;
+
+  try {
+    state.settings.Token = 'TEST_TOKEN';
+    state.settings.GuildID = 'guild';
+    state.lastMessages = {
+      'dc-news-react-delayed': '3EBNEWSREACTIONCLIENT',
+      '3EBNEWSREACTIONCLIENT': 'dc-news-react-delayed',
+    };
+    state.reactions = {};
+
+    utils.discord.getGuild = async () => ({ commands: { set: async () => {} } });
+    utils.discord.getControlChannel = async () => ({ send: async () => {} });
+    utils.discord.channelIdToJid = () => '120363123456789@newsletter';
+
+    const waEvents = [];
+    const waEv = new EventEmitter();
+    waEv.on('discordReaction', (payload) => waEvents.push(payload));
+    state.waClient = { ev: waEv, user: { id: 'bridge@s.whatsapp.net' } };
+
+    class FakeDiscordClient extends EventEmitter {
+      constructor() {
+        super();
+        this.user = { id: 'bot-1' };
+      }
+
+      async login() {
+        queueMicrotask(() => this.emit('ready'));
+        return this;
+      }
+    }
+
+    const fakeClient = new FakeDiscordClient();
+    setClientFactoryOverrides({ createDiscordClient: () => fakeClient });
+    const discordHandler = await importDiscordHandler('newsletter-reaction-wait-server-id');
+    state.dcClient = await discordHandler.start();
+
+    setTimeout(() => {
+      state.lastMessages['server-react-delayed-1'] = 'dc-news-react-delayed';
+      state.lastMessages['dc-news-react-delayed'] = 'server-react-delayed-1';
+    }, 120);
+
+    fakeClient.emit('messageReactionAdd', {
+      emoji: { name: '🔥' },
+      message: {
+        id: 'dc-news-react-delayed',
+        channel: { id: 'chan-1', send: async () => {} },
+        webhookId: null,
+        author: { id: 'user-1', bot: false },
+        reactions: { cache: new Map() },
+      },
+    }, { id: 'user-1' });
+
+    await delay(500);
+
+    assert.equal(waEvents.length, 1);
+    assert.equal(waEvents[0]?.jid, '120363123456789@newsletter');
+    assert.equal(state.lastMessages['dc-news-react-delayed'], 'server-react-delayed-1');
+    assert.equal(state.lastMessages['server-react-delayed-1'], 'dc-news-react-delayed');
+  } finally {
+    utils.discord.getGuild = originalDiscordUtils.getGuild;
+    utils.discord.getControlChannel = originalDiscordUtils.getControlChannel;
+    utils.discord.channelIdToJid = originalDiscordUtils.channelIdToJid;
+
+    state.settings.Token = originalSettings.Token;
+    state.settings.GuildID = originalSettings.GuildID;
+
+    state.dcClient = originalDcClient;
+    state.waClient = originalWaClient;
+    state.lastMessages = originalLastMessages;
+    state.reactions = originalReactions;
     resetClientFactoryOverrides();
   }
 });

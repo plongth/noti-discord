@@ -43,8 +43,9 @@ Routing may be restricted by deployment settings. Message-flow changes must pres
 - broadcast delivery mode for WhatsApp `@broadcast` chats (`sendMessage(..., ..., { broadcast: true })`
   on Discord -> WhatsApp sends)
 - newsletter delivery mode for WhatsApp `@newsletter` chats:
-  use standard `sendMessage`, skip quote threading, and prefer text/link fallback when media send fails
-  and use `newsletterReactMessage(jid, serverId, reaction?)` (not generic `sendMessage(...react...)`) for reactions.
-  Poll sends to newsletters should use text fallback (interactive poll payloads are frequently rejected by WhatsApp with ack error `479`).
+  use standard `sendMessage`, attempt quote threading for replies, and fall back to plain reply-context text if quote payloads fail.
+  Prefer text/link fallback when media send fails.
+  Use `newsletterReactMessage(jid, serverId, reaction?)` (not generic `sendMessage(...react...)`) for reactions.
+  Poll sends to newsletters should try interactive payload first, then fall back to text on send or ack rejection (commonly ack error `479`).
   Mirror incoming WhatsApp newsletter reactions via `newsletter.reaction` events and key them by `server_id`.
-  Track/resolve newsletter `server_id` mapping from outbound message ids before reaction/delete actions.
+  Track/resolve newsletter `server_id` mapping from outbound message ids before reaction/delete/edit actions, including bounded wait-and-retry behavior.

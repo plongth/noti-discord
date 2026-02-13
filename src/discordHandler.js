@@ -10,6 +10,13 @@ import messageStore from './messageStore.js';
 import { createDiscordClient } from './clientFactories.js';
 import { resolveRestartFlagPath } from './runnerLogic.js';
 import {
+  isLikelyNewsletterServerId,
+  normalizeBridgeMessageId,
+  resolveNewsletterServerIdForDiscordMessage,
+  waitForNewsletterAckError,
+  waitForNewsletterServerId,
+} from './newsletterBridge.js';
+import {
   ONE_WAY_MODES,
   oneWayAllowsDiscordToWhatsApp,
   oneWayAllowsWhatsAppToDiscord,
@@ -45,6 +52,8 @@ const bridgePinnedMessages = new Set();
 const pinExpiryTimers = new Map();
 const DISCORD_FORWARD_CONTEXT_TTL_MS = 5 * 60 * 1000;
 const DISCORD_MESSAGE_LOCATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS = 8000;
+const NEWSLETTER_SERVER_ID_WAIT_POLL_MS = 150;
 const discordForwardContextCache = new Map();
 const discordForwardContextTimers = new Map();
 const discordMessageLocationCache = new Map();
@@ -203,39 +212,6 @@ const consumeForwardContext = (messageId) => {
   const context = discordForwardContextCache.get(normalizedId) || null;
   clearTimedCacheEntry(discordForwardContextCache, discordForwardContextTimers, normalizedId);
   return context;
-};
-
-const normalizeBridgeMessageId = (value) => {
-  if (typeof value === 'string') return value.trim();
-  if (typeof value === 'number') return String(value);
-  return String(value || '').trim();
-};
-
-const isLikelyNewsletterServerId = (value) => {
-  const normalized = normalizeBridgeMessageId(value);
-  if (!normalized) return false;
-  if (/^\d+$/.test(normalized)) return true;
-  if (/^(3EB|BAE5)/i.test(normalized)) return false;
-  if (/^[A-F0-9]{16,}$/i.test(normalized)) return false;
-  return true;
-};
-
-const resolveNewsletterServerIdForDiscordMessage = (discordMessageId, fallbackId = null) => {
-  const normalizedDiscordMessageId = normalizeBridgeMessageId(discordMessageId);
-  const normalizedFallbackId = normalizeBridgeMessageId(fallbackId);
-  if (isLikelyNewsletterServerId(normalizedFallbackId)) {
-    return normalizedFallbackId;
-  }
-  if (!normalizedDiscordMessageId) {
-    return normalizedFallbackId || null;
-  }
-  for (const [waId, dcId] of Object.entries(state.lastMessages || {})) {
-    if (normalizeBridgeMessageId(dcId) !== normalizedDiscordMessageId) continue;
-    if (isLikelyNewsletterServerId(waId)) {
-      return normalizeBridgeMessageId(waId);
-    }
-  }
-  return normalizedFallbackId || null;
 };
 
 const buildDiscordMessageUrl = ({ guildId, channelId, messageId }) => {
@@ -2471,36 +2447,62 @@ const commandHandlers = {
         await ctx.reply('Selectable count must be at least 1 and no more than the number of options.');
         return;
       }
+      const toAnnouncementGroup = Boolean(ctx.getBooleanOption('announcement'));
+      const pollPayload = {
+        poll: {
+          name: question,
+          values,
+          selectableCount,
+          toAnnouncementGroup,
+        },
+      };
       if (isNewsletterJid(normalizedJid)) {
+        let interactiveError = null;
+        let ackErrorCode = null;
+        try {
+          const sentInteractive = await state.waClient.sendMessage(normalizedJid, pollPayload);
+          messageStore.set(sentInteractive);
+          ackErrorCode = await waitForNewsletterAckError(sentInteractive?.key?.id, 1200);
+          if (!ackErrorCode) {
+            await ctx.reply('Interactive newsletter poll sent to WhatsApp!');
+            return;
+          }
+        } catch (err) {
+          interactiveError = err;
+        }
+
+        if (interactiveError) {
+          state.logger?.warn?.({ err: interactiveError, jid: normalizedJid }, 'Interactive newsletter poll failed; falling back to text poll');
+        } else {
+          state.logger?.warn?.({
+            jid: normalizedJid,
+            error: ackErrorCode,
+          }, 'Interactive newsletter poll rejected by WhatsApp ack; falling back to text poll');
+        }
         const pollLines = [
           `📊 Poll: ${question}`,
           ...values.map((value, index) => `${index + 1}. ${value}`),
           '',
-          '(Newsletter fallback: interactive polls are not currently accepted in many WhatsApp newsletter sessions.)',
+          '(Newsletter fallback: interactive poll payload was not accepted by WhatsApp.)',
         ];
         try {
-          const sent = await state.waClient.sendMessage(normalizedJid, {
+          const sentFallback = await state.waClient.sendMessage(normalizedJid, {
             text: pollLines.join('\n'),
           });
-          messageStore.set(sent);
-          await ctx.reply('Newsletter poll fallback sent as text (interactive poll payload rejected by WhatsApp).');
+          messageStore.set(sentFallback);
+          if (interactiveError) {
+            await ctx.reply('Interactive newsletter poll failed, so WA2DC sent a text fallback poll.');
+          } else {
+            await ctx.reply(`Interactive newsletter poll was rejected (ack ${ackErrorCode || 'unknown'}), so WA2DC sent a text fallback poll.`);
+          }
         } catch (err) {
           state.logger?.error({ err }, 'Failed to send newsletter poll fallback to WhatsApp');
-          await ctx.reply('Failed to send the newsletter poll fallback to WhatsApp. Please try again.');
+          await ctx.reply('Interactive newsletter poll failed, and text fallback also failed. Please try again.');
         }
         return;
       }
-
-      const toAnnouncementGroup = Boolean(ctx.getBooleanOption('announcement'));
       try {
-        const sent = await state.waClient.sendMessage(normalizedJid, {
-          poll: {
-            name: question,
-            values,
-            selectableCount,
-            toAnnouncementGroup,
-          },
-        });
+        const sent = await state.waClient.sendMessage(normalizedJid, pollPayload);
         messageStore.set(sent);
         await ctx.reply('Poll sent to WhatsApp!');
       } catch (err) {
@@ -4126,6 +4128,7 @@ client.on('messageUpdate', async (oldMessage, message) => {
   if (jid == null) {
     return;
   }
+  const newsletterChat = isNewsletterJid(jid);
 
   const oldPinned = typeof oldMessage?.pinned === 'boolean' ? oldMessage.pinned : undefined;
   const newPinned = Boolean(message.pinned);
@@ -4182,12 +4185,28 @@ client.on('messageUpdate', async (oldMessage, message) => {
     return;
   }
 
-  const messageId = state.lastMessages[message.id];
+  let messageId = state.lastMessages[message.id];
+  if (newsletterChat) {
+    const resolvedServerId = await waitForNewsletterServerId({
+      discordMessageId: message.id,
+      candidateId: messageId,
+      timeoutMs: NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS,
+      pollMs: NEWSLETTER_SERVER_ID_WAIT_POLL_MS,
+    });
+    if (resolvedServerId) {
+      messageId = resolvedServerId;
+      state.lastMessages[message.id] = resolvedServerId;
+      state.lastMessages[resolvedServerId] = message.id;
+    }
+  }
   if (messageId == null) {
     if (message.author?.bot && !state.settings.redirectBots) {
       return;
     }
-    await message.channel.send(`Couldn't edit the message. You can only edit the last ${state.settings.lastMessageStorage} messages.`);
+    const reason = newsletterChat
+      ? "Couldn't edit this newsletter message yet because a server message ID is not available."
+      : `Couldn't edit the message. You can only edit the last ${state.settings.lastMessageStorage} messages.`;
+    await message.channel.send(reason);
     return;
   }
 
@@ -4223,12 +4242,26 @@ client.on('messageDelete', async (message) => {
   const newsletterServerId = newsletterChat
     ? resolveNewsletterServerIdForDiscordMessage(message.id, state.lastMessages[message.id] || normalizedWaIds[0] || null)
     : null;
-  const waIdsToDelete = newsletterChat
+  let waIdsToDelete = newsletterChat
     ? [...new Set([
-      ...(newsletterServerId ? [newsletterServerId] : []),
+      ...(newsletterServerId && isLikelyNewsletterServerId(newsletterServerId) ? [newsletterServerId] : []),
       ...normalizedWaIds.filter((id) => isLikelyNewsletterServerId(id)),
     ])]
     : normalizedWaIds;
+
+  if (newsletterChat && waIdsToDelete.length === 0) {
+    const delayedServerId = await waitForNewsletterServerId({
+      discordMessageId: message.id,
+      candidateId: state.lastMessages[message.id] || normalizedWaIds[0] || null,
+      timeoutMs: NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS,
+      pollMs: NEWSLETTER_SERVER_ID_WAIT_POLL_MS,
+    });
+    if (delayedServerId) {
+      waIdsToDelete = [delayedServerId];
+      state.lastMessages[message.id] = delayedServerId;
+      state.lastMessages[delayedServerId] = message.id;
+    }
+  }
 
   if (message.webhookId != null && waIdsToDelete.length === 0) {
     return;
@@ -4244,7 +4277,7 @@ client.on('messageDelete', async (message) => {
 
   if (waIdsToDelete.length === 0) {
     const reason = newsletterChat
-      ? "Couldn't delete this newsletter message yet because a server message ID is not available. Please try again in a few seconds."
+      ? "Couldn't delete this newsletter message because a server message ID is still unavailable."
       : `Couldn't delete the message. You can only delete the last ${state.settings.lastMessageStorage} messages.`;
     await message.channel.send(reason);
     return;
@@ -4253,7 +4286,7 @@ client.on('messageDelete', async (message) => {
   for (const waId of waIdsToDelete) {
     state.waClient.ev.emit('discordDelete', { jid, id: waId, discordMessageId: message.id });
   }
-  for (const waId of normalizedWaIds) {
+  for (const waId of [...new Set([...normalizedWaIds, ...waIdsToDelete])]) {
     delete state.lastMessages[waId];
   }
   delete state.lastMessages[message.id];
@@ -4279,7 +4312,12 @@ client.on('messageReactionAdd', async (reaction, user) => {
   }
   let messageId = state.lastMessages[reaction.message.id];
   if (newsletterChat) {
-    const resolvedServerId = resolveNewsletterServerIdForDiscordMessage(reaction.message.id, messageId);
+    const resolvedServerId = await waitForNewsletterServerId({
+      discordMessageId: reaction.message.id,
+      candidateId: messageId,
+      timeoutMs: NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS,
+      pollMs: NEWSLETTER_SERVER_ID_WAIT_POLL_MS,
+    });
     if (resolvedServerId) {
       messageId = resolvedServerId;
       state.lastMessages[reaction.message.id] = resolvedServerId;
@@ -4291,7 +4329,7 @@ client.on('messageReactionAdd', async (reaction, user) => {
       return;
     }
     const reason = newsletterChat
-      ? "Couldn't send the reaction yet because the newsletter server message ID is not available. Please try again in a few seconds."
+      ? "Couldn't send the reaction because the newsletter server message ID is still unavailable."
       : `Couldn't send the reaction. You can only react to last ${state.settings.lastMessageStorage} messages.`;
     await reaction.message.channel.send(reason);
     return;
@@ -4330,7 +4368,12 @@ client.on('messageReactionRemove', async (reaction, user) => {
   }
   let messageId = state.lastMessages[reaction.message.id];
   if (newsletterChat) {
-    const resolvedServerId = resolveNewsletterServerIdForDiscordMessage(reaction.message.id, messageId);
+    const resolvedServerId = await waitForNewsletterServerId({
+      discordMessageId: reaction.message.id,
+      candidateId: messageId,
+      timeoutMs: NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS,
+      pollMs: NEWSLETTER_SERVER_ID_WAIT_POLL_MS,
+    });
     if (resolvedServerId) {
       messageId = resolvedServerId;
       state.lastMessages[reaction.message.id] = resolvedServerId;
@@ -4342,7 +4385,7 @@ client.on('messageReactionRemove', async (reaction, user) => {
       return;
     }
     const reason = newsletterChat
-      ? "Couldn't remove the reaction yet because the newsletter server message ID is not available. Please try again in a few seconds."
+      ? "Couldn't remove the reaction because the newsletter server message ID is still unavailable."
       : `Couldn't remove the reaction. You can only react to last ${state.settings.lastMessageStorage} messages.`;
     await reaction.message.channel.send(reason);
     return;

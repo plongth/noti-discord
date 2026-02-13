@@ -34,7 +34,7 @@ Usage: `/list query:<optional text>`
 ### `/poll`
 Create a WhatsApp poll from Discord.  
 Usage: `/poll question:"text" options:"opt1,opt2,..." select:<count> announcement:<true|false>`  
-Notes: Poll messages and live vote updates are mirrored to Discord, voting can only be done directly in WhatsApp. In newsletter-linked channels, WA2DC currently sends a text fallback because interactive poll payloads are often rejected by WhatsApp newsletter sessions.
+Notes: Poll messages and live vote updates are mirrored to Discord, voting can only be done directly in WhatsApp. In newsletter-linked channels, WA2DC now tries an interactive poll first, then falls back to a text poll summary if WhatsApp rejects the payload.
 
 ### `/setpinduration`
 Set the default expiration time (24h, 7d, or 30d) for WhatsApp pins created from Discord.  
@@ -42,7 +42,7 @@ Usage: `/setpinduration duration:<24h|7d|30d>`
 
 ### Newsletters
 
-Once a newsletter is linked to a Discord channel, regular messages flow through the bridge normally (no special send command needed). If WhatsApp rejects a newsletter media payload, WA2DC falls back to text + links and logs the ack error.
+Once a newsletter is linked to a Discord channel, regular messages flow through the bridge normally (no special send command needed). WA2DC now attempts quote-threading for Discord replies, and falls back to plain reply-context text if newsletter quote payloads are rejected or unavailable. If WhatsApp rejects a newsletter media payload, WA2DC falls back to text + links and logs the ack error.
 
 ### `/newslettercreate`
 Create a WhatsApp newsletter and automatically link it to a Discord channel.  
@@ -97,7 +97,7 @@ Usage: `/newslettermessages jid:<optional ...@newsletter> count:<1-50> before:<u
 React to a newsletter message (or remove your reaction).  
 Usage: `/newsletterreact serverid:<newsletter message id> reaction:<optional emoji> jid:<optional ...@newsletter>`  
 If `reaction` is omitted, WA2DC removes your existing reaction for that message.
-You can also react directly with Discord emoji in linked newsletter channels; WA2DC now routes those through the newsletter-specific reaction API automatically.
+You can also react directly with Discord emoji in linked newsletter channels; WA2DC routes those through the newsletter-specific reaction API automatically and briefly waits for server message ID resolution when needed.
 
 ### `/newslettersubscribeupdates`
 Request newsletter live updates subscription metadata.  

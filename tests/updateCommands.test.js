@@ -426,7 +426,7 @@ test('/newsletterinviteinfo returns invite link/code from metadata', async () =>
   }
 });
 
-test('/poll in a newsletter-linked channel falls back to text payload', async () => {
+test('/poll in a newsletter-linked channel sends interactive payload first', async () => {
   const originalDiscordUtils = {
     getGuild: utils.discord.getGuild,
     getControlChannel: utils.discord.getControlChannel,
@@ -451,10 +451,10 @@ test('/poll in a newsletter-linked channel falls back to text payload', async ()
     utils.discord.getGuild = async () => ({ commands: { set: async () => {} } });
     utils.discord.getControlChannel = async () => ({ send: async () => {} });
 
-    let sentPayload = null;
+    const sendCalls = [];
     state.waClient = {
       async sendMessage(jid, content) {
-        sentPayload = { jid, content };
+        sendCalls.push({ jid, content });
         return {
           key: {
             id: 'poll-msg-1',
@@ -466,7 +466,91 @@ test('/poll in a newsletter-linked channel falls back to text payload', async ()
 
     const fakeClient = new FakeDiscordClient();
     setClientFactoryOverrides({ createDiscordClient: () => fakeClient });
-    const discordHandler = await importDiscordHandler('poll-newsletter-text-fallback');
+    const discordHandler = await importDiscordHandler('poll-newsletter-interactive-success');
+    state.dcClient = await discordHandler.start();
+    await delay(0);
+
+    const interaction = createInteraction({
+      channelId: 'newsletter-room',
+      commandName: 'poll',
+      stringOptions: {
+        question: 'Bridge poll?',
+        options: 'Yes,No',
+      },
+      integerOptions: {
+        select: 1,
+      },
+    });
+    fakeClient.emit('interactionCreate', interaction);
+    await delay(1300);
+
+    assert.equal(sendCalls.length, 1);
+    assert.equal(sendCalls[0]?.jid, '120363123456789012@newsletter');
+    assert.equal(sendCalls[0]?.content?.poll?.name, 'Bridge poll?');
+    assert.deepEqual(sendCalls[0]?.content?.poll?.values, ['Yes', 'No']);
+    assert.equal(
+      interaction.records.editReply[0]?.content,
+      'Interactive newsletter poll sent to WhatsApp!',
+    );
+  } finally {
+    utils.discord.getGuild = originalDiscordUtils.getGuild;
+    utils.discord.getControlChannel = originalDiscordUtils.getControlChannel;
+
+    state.settings.Token = originalSettings.Token;
+    state.settings.GuildID = originalSettings.GuildID;
+    state.settings.ControlChannelID = originalSettings.ControlChannelID;
+
+    state.dcClient = originalDcClient;
+    state.waClient = originalWaClient;
+    restoreObject(state.chats, originalChats);
+    resetClientFactoryOverrides();
+  }
+});
+
+test('/poll in a newsletter-linked channel falls back to text when interactive send fails', async () => {
+  const originalDiscordUtils = {
+    getGuild: utils.discord.getGuild,
+    getControlChannel: utils.discord.getControlChannel,
+  };
+  const originalSettings = {
+    Token: state.settings.Token,
+    GuildID: state.settings.GuildID,
+    ControlChannelID: state.settings.ControlChannelID,
+  };
+  const originalDcClient = state.dcClient;
+  const originalWaClient = state.waClient;
+  const originalChats = { ...state.chats };
+
+  try {
+    state.settings.Token = 'TEST_TOKEN';
+    state.settings.GuildID = 'guild';
+    state.settings.ControlChannelID = 'control';
+    restoreObject(state.chats, {
+      '120363123456789012@newsletter': { channelId: 'newsletter-room' },
+    });
+
+    utils.discord.getGuild = async () => ({ commands: { set: async () => {} } });
+    utils.discord.getControlChannel = async () => ({ send: async () => {} });
+
+    const sendCalls = [];
+    state.waClient = {
+      async sendMessage(jid, content) {
+        sendCalls.push({ jid, content });
+        if (content?.poll) {
+          throw new Error('interactive newsletter poll rejected');
+        }
+        return {
+          key: {
+            id: 'poll-msg-fallback-1',
+            remoteJid: jid,
+          },
+        };
+      },
+    };
+
+    const fakeClient = new FakeDiscordClient();
+    setClientFactoryOverrides({ createDiscordClient: () => fakeClient });
+    const discordHandler = await importDiscordHandler('poll-newsletter-interactive-fallback');
     state.dcClient = await discordHandler.start();
     await delay(0);
 
@@ -484,14 +568,14 @@ test('/poll in a newsletter-linked channel falls back to text payload', async ()
     fakeClient.emit('interactionCreate', interaction);
     await delay(0);
 
-    assert.equal(sentPayload?.jid, '120363123456789012@newsletter');
-    assert.equal(typeof sentPayload?.content?.text, 'string');
-    assert.ok(sentPayload?.content?.text?.includes('📊 Poll: Bridge poll?'));
-    assert.ok(sentPayload?.content?.text?.includes('1. Yes'));
-    assert.ok(sentPayload?.content?.text?.includes('2. No'));
+    assert.equal(sendCalls.length, 2);
+    assert.equal(sendCalls[0]?.jid, '120363123456789012@newsletter');
+    assert.equal(sendCalls[0]?.content?.poll?.name, 'Bridge poll?');
+    assert.equal(typeof sendCalls[1]?.content?.text, 'string');
+    assert.ok(sendCalls[1]?.content?.text?.includes('📊 Poll: Bridge poll?'));
     assert.equal(
       interaction.records.editReply[0]?.content,
-      'Newsletter poll fallback sent as text (interactive poll payload rejected by WhatsApp).',
+      'Interactive newsletter poll failed, so WA2DC sent a text fallback poll.',
     );
   } finally {
     utils.discord.getGuild = originalDiscordUtils.getGuild;
