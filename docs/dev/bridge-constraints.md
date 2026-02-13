@@ -46,6 +46,7 @@ Routing may be restricted by deployment settings. Message-flow changes must pres
   outbound sends should use standard `sendMessage(...)` payloads like DMs/groups where possible.
   edit/delete/reaction flows should resolve/use newsletter `server_id` mapping before dispatch.
   if upsert-driven `server_id` mapping is missing, try live-update subscription refresh and recent `newsletterFetchMessages(...)` lookups first; only then fall back to outbound IDs.
+  consume raw newsletter `live_updates` notifications (when present) to map pending outbound IDs to `server_id` values as early as possible.
   reactions should use `newsletterReactMessage(jid, serverId, reaction?)` when available.
   when newsletter media URL sends fail and the source is Discord CDN, retry with a buffer payload before falling back to text/link.
   optional send-side hardening (ack-aware retry paths and quote fallback behavior) can be enabled with `WA2DC_NEWSLETTER_SPECIAL_FLOW=1`.

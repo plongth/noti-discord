@@ -501,6 +501,12 @@ const getNewsletterAckError = (messageId) => {
   return newsletterAckErrors.get(normalizedMessageId)?.errorCode || null;
 };
 
+const resetNewsletterBridgeState = () => {
+  newsletterAckErrors.clear();
+  newsletterAckWaiters.clear();
+  newsletterPendingSends.clear();
+};
+
 export {
   clearPendingNewsletterSends,
   getNewsletterAckError,
@@ -512,6 +518,7 @@ export {
   noteNewsletterAckError,
   resolvePendingNewsletterSend,
   resolveNewsletterServerIdForDiscordMessage,
+  resetNewsletterBridgeState,
   waitForNewsletterAckError,
   waitForNewsletterServerId,
 };

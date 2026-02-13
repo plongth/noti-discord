@@ -95,6 +95,9 @@ const toBuffer = (val) => {
     if (!val) return null;
     if (Buffer.isBuffer(val)) return val;
     if (val instanceof Uint8Array) return Buffer.from(val);
+    if (typeof val === 'object' && val?.type === 'Buffer' && Array.isArray(val?.data)) {
+        return Buffer.from(val.data);
+    }
     if (typeof val === 'string') {
         try {
             return Buffer.from(val, 'base64');
@@ -247,6 +250,9 @@ const toBufferIfPresent = (value) => {
     if (!value) return null;
     if (Buffer.isBuffer(value)) return value;
     if (value instanceof Uint8Array) return Buffer.from(value);
+    if (typeof value === 'object' && value?.type === 'Buffer' && Array.isArray(value?.data)) {
+        return Buffer.from(value.data);
+    }
     if (typeof value === 'string') return Buffer.from(value, 'binary');
     return null;
 };
@@ -595,6 +601,63 @@ const mapNewsletterServerIdFromOutbound = ({ outboundId, serverId }) => {
     return normalizedServerId;
 };
 
+const mapPendingNewsletterServerId = ({
+    jid,
+    serverId,
+    pending = null,
+    source = 'unknown',
+    updateTimestamp = null,
+} = {}) => {
+    const normalizedJid = normalizeSendJid(jid);
+    const normalizedServerId = normalizeBridgeMessageId(serverId);
+    if (!isNewsletterJid(normalizedJid) || !isLikelyNewsletterServerId(normalizedServerId)) {
+        return null;
+    }
+
+    const resolvedPending = pending || resolvePendingNewsletterSend({
+        jid: normalizedJid,
+        serverId: normalizedServerId,
+        message: null,
+    });
+    const mappedDiscordMessageId = normalizeBridgeMessageId(resolvedPending?.discordMessageId);
+    if (!mappedDiscordMessageId) {
+        return null;
+    }
+    const mappedOutboundId = normalizeBridgeMessageId(resolvedPending?.outboundId);
+
+    state.lastMessages[mappedDiscordMessageId] = normalizedServerId;
+    state.lastMessages[normalizedServerId] = mappedDiscordMessageId;
+    if (mappedOutboundId) {
+        state.lastMessages[mappedOutboundId] = mappedDiscordMessageId;
+    }
+    state.sentMessages.add(normalizedServerId);
+    clearPendingNewsletterSends({
+        jid: normalizedJid,
+        discordMessageId: mappedDiscordMessageId,
+        outboundId: mappedOutboundId || null,
+    });
+
+    const ts = toIntegerOrNull(updateTimestamp);
+    if (ts && ts > state.startTime) {
+        state.startTime = ts;
+    }
+
+    state.logger?.info?.({
+        jid: normalizedJid,
+        discordMessageId: mappedDiscordMessageId,
+        candidateId: mappedOutboundId || undefined,
+        serverId: normalizedServerId,
+        source,
+    }, 'Mapped newsletter server ID from pending send');
+
+    return {
+        jid: normalizedJid,
+        discordMessageId: mappedDiscordMessageId,
+        outboundId: mappedOutboundId,
+        serverId: normalizedServerId,
+    };
+};
+
 const ensureNewsletterLiveUpdatesSubscription = async (client, jid) => {
     if (typeof client?.subscribeNewsletterUpdates !== 'function') {
         return;
@@ -669,31 +732,129 @@ const resolveNewsletterServerIdFromFetch = async ({
         pending,
     }));
     if (!isLikelyNewsletterServerId(serverId)) {
+        state.logger?.debug?.({
+            jid: normalizedJid,
+            discordMessageId: normalizedDiscordMessageId || undefined,
+            candidateId: normalizedCandidateId || undefined,
+            parsedCount: parsedMessages.length,
+        }, 'Newsletter message fetch fallback did not yield a server ID');
         return null;
     }
 
-    const mappedDiscordMessageId = normalizedDiscordMessageId || normalizeBridgeMessageId(pending.discordMessageId);
-    if (mappedDiscordMessageId) {
-        state.lastMessages[mappedDiscordMessageId] = serverId;
-        state.lastMessages[serverId] = mappedDiscordMessageId;
-    }
-    const mappedOutboundId = normalizedCandidateId || normalizeBridgeMessageId(pending.outboundId);
-    if (mappedOutboundId && mappedDiscordMessageId) {
-        state.lastMessages[mappedOutboundId] = mappedDiscordMessageId;
-    }
-    state.sentMessages.add(serverId);
-    clearPendingNewsletterSends({
+    const mapped = mapPendingNewsletterServerId({
         jid: normalizedJid,
-        discordMessageId: mappedDiscordMessageId || null,
-        outboundId: mappedOutboundId || null,
-    });
-    state.logger?.info?.({
-        jid: normalizedJid,
-        discordMessageId: mappedDiscordMessageId,
-        candidateId: mappedOutboundId || undefined,
         serverId,
-    }, 'Resolved newsletter server ID via message fetch fallback');
-    return serverId;
+        pending: {
+            ...pending,
+            discordMessageId: normalizedDiscordMessageId || pending.discordMessageId,
+            outboundId: normalizedCandidateId || pending.outboundId,
+        },
+        source: 'newsletter.fetch_messages',
+    });
+    return mapped?.serverId || null;
+};
+
+const getNodeChildren = (node = {}) => (
+    Array.isArray(node?.content) ? node.content : []
+);
+
+const getNodeChildrenByTag = (node = {}, tag) => (
+    getNodeChildren(node).filter((entry) => entry?.tag === tag)
+);
+
+const parseNewsletterLiveUpdateEntries = (node = {}) => {
+    const results = [];
+    for (const liveUpdatesNode of getNodeChildrenByTag(node, 'live_updates')) {
+        for (const messagesNode of getNodeChildrenByTag(liveUpdatesNode, 'messages')) {
+            const timestamp = toIntegerOrNull(messagesNode?.attrs?.t);
+            for (const messageNode of getNodeChildrenByTag(messagesNode, 'message')) {
+                const serverId = normalizeBridgeMessageId(
+                    messageNode?.attrs?.server_id
+                    || messageNode?.attrs?.message_id
+                    || messageNode?.attrs?.id,
+                );
+                if (!isLikelyNewsletterServerId(serverId)) continue;
+                const reactionsNode = getNodeChildrenByTag(messageNode, 'reactions')[0];
+                const reactions = getNodeChildrenByTag(reactionsNode, 'reaction')
+                    .map((reactionNode) => ({
+                        code: typeof reactionNode?.attrs?.code === 'string'
+                            ? reactionNode.attrs.code.trim()
+                            : '',
+                        count: toIntegerOrNull(reactionNode?.attrs?.count),
+                    }))
+                    .filter((entry) => entry.code);
+                results.push({
+                    serverId,
+                    timestamp,
+                    reactions,
+                });
+            }
+        }
+    }
+    return results;
+};
+
+const parseMexNewsletterServerIdCandidates = (node = {}) => {
+    const fromJid = normalizeSendJid(node?.attrs?.from || '');
+    const candidates = [];
+    const seen = new Set();
+
+    const pushCandidate = ({ jid, serverId }) => {
+        const normalizedJid = normalizeSendJid(jid || '');
+        const normalizedServerId = normalizeBridgeMessageId(serverId);
+        if (!isNewsletterJid(normalizedJid) || !isLikelyNewsletterServerId(normalizedServerId)) {
+            return;
+        }
+        const key = `${normalizedJid}|${normalizedServerId}`;
+        if (seen.has(key)) {
+            return;
+        }
+        seen.add(key);
+        candidates.push({ jid: normalizedJid, serverId: normalizedServerId });
+    };
+
+    const visit = (value, fallbackJid = fromJid, depth = 0) => {
+        if (depth > 8 || value == null) {
+            return;
+        }
+        if (Array.isArray(value)) {
+            value.forEach((entry) => visit(entry, fallbackJid, depth + 1));
+            return;
+        }
+        if (typeof value !== 'object') {
+            return;
+        }
+        const nextFallbackJid = normalizeSendJid(
+            value?.newsletter_id
+            || value?.newsletterId
+            || (isNewsletterJid(value?.id) ? value.id : fallbackJid),
+        );
+        pushCandidate({
+            jid: nextFallbackJid || fallbackJid,
+            serverId: value?.message_server_id
+                || value?.messageServerId
+                || value?.server_id
+                || value?.serverId
+                || value?.message_id
+                || value?.messageId,
+        });
+        Object.values(value).forEach((entry) => visit(entry, nextFallbackJid || fallbackJid, depth + 1));
+    };
+
+    const updateNodes = getNodeChildrenByTag(node, 'update');
+    updateNodes.forEach((updateNode) => {
+        const payload = toBufferIfPresent(updateNode?.content);
+        if (!payload?.length) {
+            return;
+        }
+        try {
+            const parsed = JSON.parse(payload.toString('utf8'));
+            visit(parsed, fromJid, 0);
+        } catch {
+            return;
+        }
+    });
+    return candidates;
 };
 
 const toMentionLabel = (value) => {
@@ -1508,21 +1669,12 @@ const connectToWhatsApp = async (retry = 1) => {
                             serverId: resolvedServerId,
                             message: rawMessage,
                         });
-                        if (pending?.discordMessageId) {
-                            state.lastMessages[pending.discordMessageId] = resolvedServerId;
-                            state.lastMessages[resolvedServerId] = pending.discordMessageId;
-                            if (pending.outboundId) {
-                                state.lastMessages[pending.outboundId] = pending.discordMessageId;
-                            }
-                            state.sentMessages.add(resolvedServerId);
-                            state.logger?.debug?.({
-                                jid: remoteJid,
-                                discordMessageId: pending.discordMessageId,
-                                serverId: resolvedServerId,
-                                outboundId: pending.outboundId || undefined,
-                                type: pending.type || undefined,
-                            }, 'Mapped newsletter server ID from pending outbound send');
-                        }
+                        mapPendingNewsletterServerId({
+                            jid: remoteJid,
+                            serverId: resolvedServerId,
+                            pending,
+                            source: 'messages.upsert',
+                        });
                     }
                 }
                 const sentCandidates = [...new Set([messageId, outboundId, serverId].filter(Boolean))];
@@ -1880,6 +2032,57 @@ const connectToWhatsApp = async (retry = 1) => {
         });
     });
 
+    client.ws.on('CB:notification,type:newsletter', (node = {}) => {
+        const jid = normalizeSendJid(node?.attrs?.from || '');
+        if (!isNewsletterJid(jid)) {
+            return;
+        }
+        const liveUpdates = parseNewsletterLiveUpdateEntries(node);
+        if (!liveUpdates.length) {
+            return;
+        }
+        let mappedCount = 0;
+        for (const update of liveUpdates) {
+            const mapped = mapPendingNewsletterServerId({
+                jid,
+                serverId: update.serverId,
+                source: 'ws.newsletter.live_updates',
+                updateTimestamp: update.timestamp,
+            });
+            if (mapped) {
+                mappedCount += 1;
+            }
+        }
+        state.logger?.debug?.({
+            jid,
+            updates: liveUpdates.length,
+            mappedCount,
+        }, 'Processed newsletter live_updates notification');
+    });
+
+    client.ws.on('CB:notification,type:mex', (node = {}) => {
+        const candidates = parseMexNewsletterServerIdCandidates(node);
+        if (!candidates.length) {
+            return;
+        }
+        let mappedCount = 0;
+        for (const candidate of candidates) {
+            const mapped = mapPendingNewsletterServerId({
+                jid: candidate.jid,
+                serverId: candidate.serverId,
+                source: 'ws.newsletter.mex',
+            });
+            if (mapped) {
+                mappedCount += 1;
+            }
+        }
+        state.logger?.debug?.({
+            from: normalizeSendJid(node?.attrs?.from || ''),
+            candidates: candidates.length,
+            mappedCount,
+        }, 'Processed newsletter mex notification');
+    });
+
     client.ws.on('CB:ack,class:message', (node = {}) => {
         const attrs = node?.attrs || {};
         const errorCode = normalizeBridgeMessageId(attrs?.error);
@@ -1892,6 +2095,9 @@ const connectToWhatsApp = async (retry = 1) => {
         }
         const fromJid = normalizeSendJid(attrs?.from || attrs?.to || '');
         if (!isNewsletterJid(fromJid)) {
+            return;
+        }
+        if (getNewsletterAckError(messageId) === errorCode) {
             return;
         }
         noteNewsletterAckError({
@@ -2348,6 +2554,7 @@ const connectToWhatsApp = async (retry = 1) => {
         const candidateId = normalizeBridgeMessageId(state.lastMessages[message.id]);
         let messageId = candidateId;
         if (newsletterChat) {
+            await ensureNewsletterLiveUpdatesSubscription(client, targetJid);
             const resolvedServerId = await waitForNewsletterServerId({
                 discordMessageId: message.id,
                 candidateId: messageId,
@@ -2483,6 +2690,7 @@ const connectToWhatsApp = async (retry = 1) => {
         }
 
         if (newsletterChat) {
+            await ensureNewsletterLiveUpdatesSubscription(client, targetJid);
             const candidateId = normalizeBridgeMessageId(key.id);
             let serverId = await waitForNewsletterServerId({
                 discordMessageId: reaction?.message?.id,
@@ -2584,6 +2792,15 @@ const connectToWhatsApp = async (retry = 1) => {
                 pollMs: NEWSLETTER_SERVER_ID_WAIT_POLL_MS,
             })
             : rawDeleteId;
+        if (newsletterChat && !deleteId) {
+            await ensureNewsletterLiveUpdatesSubscription(client, targetJid);
+            deleteId = await waitForNewsletterServerId({
+                discordMessageId,
+                candidateId: outboundCandidateId,
+                timeoutMs: NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS,
+                pollMs: NEWSLETTER_SERVER_ID_WAIT_POLL_MS,
+            });
+        }
         if (newsletterChat && !deleteId) {
             deleteId = await resolveNewsletterServerIdFromFetch({
                 client,

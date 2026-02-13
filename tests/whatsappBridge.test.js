@@ -5,6 +5,7 @@ import test from 'node:test';
 import { WAMessageStatus } from '@whiskeysockets/baileys';
 
 import { resetClientFactoryOverrides, setClientFactoryOverrides } from '../src/clientFactories.js';
+import { resetNewsletterBridgeState } from '../src/newsletterBridge.js';
 import state from '../src/state.js';
 import storage from '../src/storage.js';
 import utils from '../src/utils.js';
@@ -53,6 +54,7 @@ const setupWhatsAppHarness = async ({
     state.sentMessages.clear();
     state.sentReactions.clear();
     state.sentPins.clear();
+    resetNewsletterBridgeState();
     restoreObject(state.chats, {});
     restoreObject(state.contacts, {});
 
@@ -115,7 +117,7 @@ const setupWhatsAppHarness = async ({
         this._sendCounter = 0;
         this.contacts = {};
         this.signalRepository = {};
-        this.ws = { on() {} };
+        this.ws = new EventEmitter();
       }
 
       async sendMessage(jid, content, options) {
@@ -161,6 +163,7 @@ const setupWhatsAppHarness = async ({
       restoreSet(state.sentMessages, originalSentMessages);
       restoreSet(state.sentReactions, originalSentReactions);
       restoreSet(state.sentPins, originalSentPins);
+      resetNewsletterBridgeState();
       restoreObject(state.chats, originalChats);
       restoreObject(state.contacts, originalContacts);
       state.dcClient = originalDcClient;
@@ -185,6 +188,7 @@ const setupWhatsAppHarness = async ({
     restoreSet(state.sentMessages, originalSentMessages);
     restoreSet(state.sentReactions, originalSentReactions);
     restoreSet(state.sentPins, originalSentPins);
+    resetNewsletterBridgeState();
     restoreObject(state.chats, originalChats);
     restoreObject(state.contacts, originalContacts);
     state.dcClient = originalDcClient;
@@ -706,6 +710,76 @@ test('Discord newsletter send maps server ids from pending upsert notifications'
     assert.equal(state.lastMessages['dc-news-pending-map'], '48902.1-1');
     assert.equal(state.lastMessages['48902.1-1'], 'dc-news-pending-map');
     assert.equal(state.lastMessages[outboundId], 'dc-news-pending-map');
+  } finally {
+    messageStore.clear();
+    harness.cleanup();
+  }
+});
+
+test('Newsletter live_updates notifications map pending outbound ids to server ids', async () => {
+  const harness = await setupWhatsAppHarness({
+    oneWay: 0b11,
+    formatJid: (jid) => (typeof jid === 'string' ? jid.trim() : jid),
+  });
+  try {
+    messageStore.clear();
+    harness.fakeClient.sendMessage = async (jid, content, options) => {
+      harness.fakeClient.sendCalls.push({ jid, content, options });
+      return {
+        key: {
+          id: '3EB0LIVEUPDATEMAPABCDEF123456',
+          remoteJid: jid,
+        },
+      };
+    };
+
+    harness.fakeClient.ev.emit('discordMessage', {
+      jid: '1203630@newsletter',
+      message: {
+        id: 'dc-news-live-map',
+        content: 'live update mapping text',
+        cleanContent: 'live update mapping text',
+        webhookId: null,
+        author: { username: 'BridgeUser' },
+        member: { displayName: 'BridgeUser' },
+        channel: { send: async () => {} },
+        attachments: new Map(),
+        stickers: new Map(),
+        embeds: [],
+        mentions: { users: new Map(), members: new Map(), roles: new Map() },
+      },
+    });
+    await delay(0);
+
+    assert.equal(state.lastMessages['dc-news-live-map'], '3EB0LIVEUPDATEMAPABCDEF123456');
+
+    const nowTs = String(Math.floor(Date.now() / 1000));
+    harness.fakeClient.ws.emit('CB:notification,type:newsletter', {
+      tag: 'notification',
+      attrs: {
+        from: '1203630@newsletter',
+        type: 'newsletter',
+        id: 'test-live-updates',
+        t: nowTs,
+      },
+      content: [{
+        tag: 'live_updates',
+        attrs: {},
+        content: [{
+          tag: 'messages',
+          attrs: { t: nowTs },
+          content: [{
+            tag: 'message',
+            attrs: { server_id: '131' },
+          }],
+        }],
+      }],
+    });
+    await delay(0);
+
+    assert.equal(state.lastMessages['dc-news-live-map'], '131');
+    assert.equal(state.lastMessages['131'], 'dc-news-live-map');
+    assert.equal(state.lastMessages['3EB0LIVEUPDATEMAPABCDEF123456'], 'dc-news-live-map');
   } finally {
     messageStore.clear();
     harness.cleanup();

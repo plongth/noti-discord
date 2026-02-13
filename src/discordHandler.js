@@ -10,6 +10,8 @@ import messageStore from './messageStore.js';
 import { createDiscordClient } from './clientFactories.js';
 import { resolveRestartFlagPath } from './runnerLogic.js';
 import {
+  getNewsletterAckError,
+  getPendingNewsletterSend,
   getNewsletterServerIdFromMessage,
   isLikelyNewsletterServerId,
   normalizeBridgeMessageId,
@@ -1408,6 +1410,35 @@ const resolveNewsletterJidFromCommand = async (ctx, { optionName = 'jid' } = {})
   return jid;
 };
 
+const resolveNewsletterJidForDebug = (ctx, { optionName = 'jid' } = {}) => {
+  const rawOption = ctx.getStringOption(optionName);
+  if (rawOption) {
+    const normalized = utils.whatsapp.formatJid(utils.whatsapp.toJid(rawOption) || rawOption);
+    return isNewsletterJid(normalized) ? normalized : null;
+  }
+  const channelLinkedJid = utils.whatsapp.formatJid(utils.discord.channelIdToJid(ctx.channel?.id));
+  return isNewsletterJid(channelLinkedJid) ? channelLinkedJid : null;
+};
+
+const collectMappedWhatsAppIdsForDiscordMessage = (discordMessageId) => {
+  const normalizedDiscordMessageId = normalizeBridgeMessageId(discordMessageId);
+  if (!normalizedDiscordMessageId) {
+    return [];
+  }
+  const mapped = [];
+  const direct = normalizeBridgeMessageId(state.lastMessages?.[normalizedDiscordMessageId]);
+  if (direct && direct !== normalizedDiscordMessageId) {
+    mapped.push(direct);
+  }
+  for (const [waIdRaw, dcIdRaw] of Object.entries(state.lastMessages || {})) {
+    if (normalizeBridgeMessageId(dcIdRaw) !== normalizedDiscordMessageId) continue;
+    const waId = normalizeBridgeMessageId(waIdRaw);
+    if (!waId || waId === normalizedDiscordMessageId) continue;
+    mapped.push(waId);
+  }
+  return [...new Set(mapped)];
+};
+
 const resolveUserJidOption = async (ctx, {
   optionName = 'user',
   description = 'user',
@@ -2078,6 +2109,123 @@ const commandHandlers = {
       if (messages.length > 10) {
         lines.push(`...and ${messages.length - 10} more.`);
       }
+      await ctx.replyPartitioned(lines.join('\n'));
+    },
+  },
+  newslettermessagedebug: {
+    description: 'Inspect WA2DC mapping/debug data for a newsletter Discord message ID.',
+    options: [
+      {
+        name: 'messageid',
+        description: 'Discord message ID to inspect.',
+        type: ApplicationCommandOptionTypes.STRING,
+        required: true,
+      },
+      {
+        name: 'jid',
+        description: 'Target newsletter JID (optional if this channel is linked).',
+        type: ApplicationCommandOptionTypes.STRING,
+        required: false,
+      },
+    ],
+    async execute(ctx) {
+      const rawMessageId = ctx.getStringOption('messageid')?.trim();
+      if (!rawMessageId) {
+        await ctx.reply('Please provide `messageid`.');
+        return;
+      }
+      const normalizedDiscordMessageId = normalizeBridgeMessageId(rawMessageId);
+      if (!normalizedDiscordMessageId) {
+        await ctx.reply('Invalid `messageid`.');
+        return;
+      }
+
+      const explicitJid = ctx.getStringOption('jid');
+      const targetJid = resolveNewsletterJidForDebug(ctx);
+      if (explicitJid && !targetJid) {
+        await ctx.reply('`jid` must be a valid newsletter JID (`...@newsletter`).');
+        return;
+      }
+
+      const waIds = collectMappedWhatsAppIdsForDiscordMessage(normalizedDiscordMessageId);
+      const directMappedId = normalizeBridgeMessageId(state.lastMessages?.[normalizedDiscordMessageId]);
+      const pendingByDiscordId = getPendingNewsletterSend({
+        jid: targetJid || null,
+        discordMessageId: normalizedDiscordMessageId,
+      });
+      const pendingByOutboundId = !pendingByDiscordId && directMappedId
+        ? getPendingNewsletterSend({
+          jid: targetJid || null,
+          outboundId: directMappedId,
+        })
+        : null;
+      const pending = pendingByDiscordId || pendingByOutboundId || null;
+
+      const ackErrors = {};
+      const reverseMap = {};
+      const sentMessageFlags = {};
+      const idsToInspect = [...new Set([directMappedId, ...waIds].filter(Boolean))];
+      idsToInspect.forEach((id) => {
+        reverseMap[id] = normalizeBridgeMessageId(state.lastMessages?.[id]) || null;
+        sentMessageFlags[id] = state.sentMessages.has(id);
+        const errorCode = getNewsletterAckError(id);
+        if (errorCode) {
+          ackErrors[id] = errorCode;
+        }
+      });
+
+      const messageStoreEntries = [];
+      if (targetJid) {
+        idsToInspect.forEach((id) => {
+          const stored = messageStore.get({ remoteJid: targetJid, id });
+          if (!stored) return;
+          messageStoreEntries.push({
+            id,
+            key: {
+              id: normalizeBridgeMessageId(stored?.key?.id) || null,
+              server_id: normalizeBridgeMessageId(stored?.key?.server_id || stored?.key?.serverId) || null,
+              remoteJid: utils.whatsapp.formatJid(stored?.key?.remoteJid) || null,
+              fromMe: typeof stored?.key?.fromMe === 'boolean' ? stored.key.fromMe : null,
+            },
+            messageTimestamp: stored?.messageTimestamp ?? null,
+            hasMessage: Boolean(stored?.message),
+          });
+        });
+      }
+
+      const debugPayload = {
+        discordMessageId: normalizedDiscordMessageId,
+        newsletterJid: targetJid || null,
+        directMappedId: directMappedId || null,
+        directMappedIdLooksServer: isLikelyNewsletterServerId(directMappedId),
+        mappedWaIds: waIds,
+        reverseMap,
+        sentMessageFlags,
+        ackErrors,
+        pendingSend: pending ? {
+          jid: pending.jid || null,
+          discordMessageId: pending.discordMessageId || null,
+          outboundId: pending.outboundId || null,
+          type: pending.type || '',
+          text: pending.text || '',
+          timestamp: pending.timestamp || null,
+        } : null,
+        messageStoreEntries,
+      };
+
+      const lines = [
+        `Discord message ID: \`${normalizedDiscordMessageId}\``,
+        `Newsletter JID: ${targetJid ? `\`${formatNewsletterJidForReply(targetJid)}\`` : '`(not provided / not linked channel)`'}`,
+        `Direct map: \`${directMappedId || '(none)'}\``,
+        `Mapped WA IDs: ${waIds.length ? waIds.map((id) => `\`${id}\``).join(', ') : '(none)'}`,
+      ];
+      if (Object.keys(ackErrors).length) {
+        lines.push(`Ack errors: ${Object.entries(ackErrors).map(([id, code]) => `\`${id}\` -> ${code}`).join(', ')}`);
+      }
+      if (pending) {
+        lines.push(`Pending send: outbound=\`${pending.outboundId || '(none)'}\`, type=${pending.type || '(none)'}`);
+      }
+      lines.push('', 'Raw debug payload:', `\`\`\`json\n${formatJsonForReply(debugPayload)}\n\`\`\``);
       await ctx.replyPartitioned(lines.join('\n'));
     },
   },

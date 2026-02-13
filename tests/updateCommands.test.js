@@ -4,7 +4,11 @@ import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 
 import { resetClientFactoryOverrides, setClientFactoryOverrides } from '../src/clientFactories.js';
-import { noteNewsletterAckError } from '../src/newsletterBridge.js';
+import {
+  clearPendingNewsletterSends,
+  noteNewsletterAckError,
+  notePendingNewsletterSend,
+} from '../src/newsletterBridge.js';
 import state from '../src/state.js';
 import storage from '../src/storage.js';
 import utils from '../src/utils.js';
@@ -421,6 +425,90 @@ test('/newsletterinviteinfo returns invite link/code from metadata', async () =>
     state.settings.GuildID = originalSettings.GuildID;
     state.settings.ControlChannelID = originalSettings.ControlChannelID;
 
+    state.dcClient = originalDcClient;
+    state.waClient = originalWaClient;
+    resetClientFactoryOverrides();
+  }
+});
+
+test('/newslettermessagedebug shows mapping, pending send, and ack diagnostics', async () => {
+  const originalDiscordUtils = {
+    getGuild: utils.discord.getGuild,
+    getControlChannel: utils.discord.getControlChannel,
+  };
+  const originalSettings = {
+    Token: state.settings.Token,
+    GuildID: state.settings.GuildID,
+    ControlChannelID: state.settings.ControlChannelID,
+  };
+  const originalDcClient = state.dcClient;
+  const originalWaClient = state.waClient;
+  const originalChats = { ...state.chats };
+  const originalLastMessages = state.lastMessages;
+
+  try {
+    state.settings.Token = 'TEST_TOKEN';
+    state.settings.GuildID = 'guild';
+    state.settings.ControlChannelID = 'control';
+    restoreObject(state.chats, {
+      '120363123456789012@newsletter': { channelId: 'newsletter-room' },
+    });
+    state.lastMessages = {
+      'dc-news-debug-1': '3EB0DEBUGOUTBOUNDABC123456789',
+      '3EB0DEBUGOUTBOUNDABC123456789': 'dc-news-debug-1',
+    };
+
+    notePendingNewsletterSend({
+      jid: '120363123456789012@newsletter',
+      discordMessageId: 'dc-news-debug-1',
+      outboundId: '3EB0DEBUGOUTBOUNDABC123456789',
+      content: { text: 'newsletter debug text' },
+    });
+    noteNewsletterAckError({
+      messageId: '3EB0DEBUGOUTBOUNDABC123456789',
+      jid: '120363123456789012@newsletter',
+      errorCode: '479',
+    });
+
+    utils.discord.getGuild = async () => ({ commands: { set: async () => {} } });
+    utils.discord.getControlChannel = async () => ({ send: async () => {} });
+
+    state.waClient = {};
+
+    const fakeClient = new FakeDiscordClient();
+    setClientFactoryOverrides({ createDiscordClient: () => fakeClient });
+    const discordHandler = await importDiscordHandler('newslettermessagedebug-basic');
+    state.dcClient = await discordHandler.start();
+    await delay(0);
+
+    const interaction = createInteraction({
+      channelId: 'newsletter-room',
+      commandName: 'newslettermessagedebug',
+      stringOptions: {
+        messageid: 'dc-news-debug-1',
+      },
+    });
+    fakeClient.emit('interactionCreate', interaction);
+    await delay(0);
+
+    assert.equal(interaction.records.editReply.length, 1);
+    const content = String(interaction.records.editReply[0]?.content || '');
+    assert.ok(content.includes('Discord message ID: `dc-news-debug-1`'));
+    assert.ok(content.includes('`3EB0DEBUGOUTBOUNDABC123456789`'));
+    assert.ok(content.includes('Ack errors: `3EB0DEBUGOUTBOUNDABC123456789` -> 479'));
+    assert.ok(content.includes('"pendingSend"'));
+  } finally {
+    clearPendingNewsletterSends({ jid: '120363123456789012@newsletter' });
+
+    utils.discord.getGuild = originalDiscordUtils.getGuild;
+    utils.discord.getControlChannel = originalDiscordUtils.getControlChannel;
+
+    state.settings.Token = originalSettings.Token;
+    state.settings.GuildID = originalSettings.GuildID;
+    state.settings.ControlChannelID = originalSettings.ControlChannelID;
+
+    restoreObject(state.chats, originalChats);
+    state.lastMessages = originalLastMessages;
     state.dcClient = originalDcClient;
     state.waClient = originalWaClient;
     resetClientFactoryOverrides();

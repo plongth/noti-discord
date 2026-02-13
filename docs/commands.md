@@ -93,6 +93,11 @@ Usage: `/newsletterupdatedescription description:"new text" jid:<optional ...@ne
 Fetch recent messages from a newsletter.  
 Usage: `/newslettermessages jid:<optional ...@newsletter> count:<1-50> before:<unix seconds> after:<unix seconds>`
 
+### `/newslettermessagedebug`
+Inspect WA2DC mapping/debug data for a newsletter-linked Discord message.  
+Usage: `/newslettermessagedebug messageid:<discord message id> jid:<optional ...@newsletter>`  
+Shows the current Discord->WhatsApp ID mapping, pending send correlation data, sent flags, and any cached newsletter ack errors.
+
 ### `/newsletterreact`
 React to a newsletter message (or remove your reaction).  
 Usage: `/newsletterreact serverid:<newsletter message id> reaction:<optional emoji> jid:<optional ...@newsletter>`  
