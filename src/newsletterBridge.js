@@ -16,11 +16,7 @@ const normalizeBridgeMessageId = (value) => {
 
 const isLikelyNewsletterServerId = (value) => {
   const normalized = normalizeBridgeMessageId(value);
-  if (!normalized) return false;
-  if (/^\d+$/.test(normalized)) return true;
-  if (/^(3EB|BAE5)/i.test(normalized)) return false;
-  if (/^[A-F0-9]{16,}$/i.test(normalized)) return false;
-  return true;
+  return Boolean(normalized);
 };
 
 const getNewsletterServerIdFromMessage = (message) => {

@@ -498,10 +498,7 @@ test('Discord messageDelete in newsletter channels waits for delayed server_id m
   try {
     state.settings.Token = 'TEST_TOKEN';
     state.settings.GuildID = 'guild';
-    state.lastMessages = {
-      '3EBDELAYEDCLIENTID': 'dc-news-delayed',
-      'dc-news-delayed': '3EBDELAYEDCLIENTID',
-    };
+    state.lastMessages = {};
     state.reactions = {};
 
     utils.discord.getGuild = async () => ({ commands: { set: async () => {} } });
@@ -1725,10 +1722,7 @@ test('Discord newsletter reactions wait for delayed server_id mapping', async ()
   try {
     state.settings.Token = 'TEST_TOKEN';
     state.settings.GuildID = 'guild';
-    state.lastMessages = {
-      'dc-news-react-delayed': '3EBNEWSREACTIONCLIENT',
-      '3EBNEWSREACTIONCLIENT': 'dc-news-react-delayed',
-    };
+    state.lastMessages = {};
     state.reactions = {};
 
     utils.discord.getGuild = async () => ({ commands: { set: async () => {} } });

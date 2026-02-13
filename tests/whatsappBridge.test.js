@@ -511,9 +511,6 @@ test('Newsletter edit/reaction/delete wait for server ids before sending actions
   const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
   try {
     const notices = [];
-    state.lastMessages['dc-news-edit-wait'] = '3EBEDITCLIENTID';
-    state.lastMessages['dc-news-react-wait'] = '3EBREACTCLIENTID';
-    state.lastMessages['dc-news-delete-wait'] = '3EBDELETECLIENTID';
 
     setTimeout(() => {
       state.lastMessages['server-edit-1'] = 'dc-news-edit-wait';
@@ -554,7 +551,7 @@ test('Newsletter edit/reaction/delete wait for server ids before sending actions
 
     harness.fakeClient.ev.emit('discordDelete', {
       jid: '1203630@newsletter',
-      id: '3EBDELETECLIENTID',
+      id: null,
       discordMessageId: 'dc-news-delete-wait',
     });
 
