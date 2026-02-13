@@ -501,6 +501,13 @@ const normalizeAttachmentForWhatsAppSend = (attachment = {}) => {
     return normalized;
 };
 
+const isNewsletterSupportedMediaAttachment = (attachment = {}) => {
+    const normalized = normalizeAttachmentForWhatsAppSend(attachment);
+    const mimetype = normalizeMimeType(normalized.contentType);
+    const majorType = mimetype.split('/')[0];
+    return majorType === 'image' || majorType === 'video';
+};
+
 const normalizeMimeType = (value = '') => {
     if (typeof value !== 'string') return '';
     return value.split(';')[0].trim().toLowerCase();
@@ -2639,7 +2646,41 @@ const connectToWhatsApp = async (retry = 1) => {
             attachments = utils.discord.dedupeCollectedAttachments(attachments);
         }
         const consumedUrls = [...(media.consumedUrls || []), ...(snapshotEmbedMedia.consumedUrls || [])];
-        const shouldSendAttachments = state.settings.UploadAttachments && attachments.length > 0;
+        const hasAttachments = attachments.length > 0;
+        const shouldSendAttachments = state.settings.UploadAttachments && hasAttachments;
+        const newsletterMediaUrlFallbackEnabled = newsletterChat && Boolean(state.settings.NewsletterMediaUrlFallback);
+        let attachmentsToSend = attachments;
+        let attachmentLinksForFallback = attachments.map((file) => file.url).filter(Boolean);
+        if (newsletterChat && hasAttachments) {
+            const newsletterMediaAttachments = attachments.filter((file) => isNewsletterSupportedMediaAttachment(file));
+            const newsletterUnsupportedAttachments = attachments.filter((file) => !isNewsletterSupportedMediaAttachment(file));
+            if (newsletterUnsupportedAttachments.length) {
+                await message.channel?.send(
+                    `WhatsApp newsletters currently allow only image/video posts. `
+                    + `Skipping ${newsletterUnsupportedAttachments.length} unsupported attachment(s). `
+                    + 'See: https://faq.whatsapp.com/549900560675125',
+                ).catch(() => {});
+            }
+            if (newsletterMediaAttachments.length) {
+                if (newsletterMediaUrlFallbackEnabled) {
+                    await message.channel?.send(
+                        'Newsletter media URL fallback is enabled as a temporary workaround until upstream Baileys newsletter media posting is fixed. '
+                        + 'Image/video attachments will be sent as plain URL links (no thumbnail or attachment payload).',
+                    ).catch(() => {});
+                    attachmentLinksForFallback = newsletterMediaAttachments.map((file) => file.url).filter(Boolean);
+                } else {
+                    await message.channel?.send(
+                        'Newsletter media URL fallback is disabled. '
+                        + "Until upstream Baileys newsletter media posting is fixed, image/video attachments won't be sent as WhatsApp media. "
+                        + 'Use `/newsletterurlfallback enabled:true` to send them as plain links for now.',
+                    ).catch(() => {});
+                    attachmentLinksForFallback = [];
+                }
+            } else {
+                attachmentLinksForFallback = [];
+            }
+            attachmentsToSend = [];
+        }
 
         if (shouldSendAttachments && consumedUrls.length && text) {
             for (const consumed of consumedUrls) {
@@ -2856,11 +2897,11 @@ const connectToWhatsApp = async (retry = 1) => {
             return { sentMessage, ackErrorCode };
         };
 
-        if (shouldSendAttachments) {
+        if (state.settings.UploadAttachments && attachmentsToSend.length > 0) {
             let first = true;
             let sentAnyAttachment = false;
             let attemptedAttachmentSends = 0;
-            for (const file of attachments) {
+            for (const file of attachmentsToSend) {
                 const preparedFile = normalizeAttachmentForWhatsAppSend(file);
                 let doc = utils.whatsapp.createDocumentContent(preparedFile);
                 if (!doc) continue;
@@ -2940,7 +2981,7 @@ const connectToWhatsApp = async (retry = 1) => {
         } else if (hasOnlyCustomEmoji && emojiFallbackText) {
             fallbackParts.push(emojiFallbackText);
         }
-        const attachmentLinks = attachments.map((file) => file.url).filter(Boolean);
+        const attachmentLinks = attachmentLinksForFallback;
         fallbackParts.push(...attachmentLinks);
         let finalText = fallbackParts.join(' ').trim();
         if (isForwardedFromDiscord) {

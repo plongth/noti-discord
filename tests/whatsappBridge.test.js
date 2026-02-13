@@ -34,6 +34,7 @@ const setupWhatsAppHarness = async ({
   const originalLogger = state.logger;
   const originalOneWay = state.settings.oneWay;
   const originalMirrorWAStatuses = state.settings.MirrorWAStatuses;
+  const originalNewsletterMediaUrlFallback = state.settings.NewsletterMediaUrlFallback;
   const originalLastMessages = state.lastMessages;
   const originalStartTime = state.startTime;
   const originalSentMessages = snapshotSet(state.sentMessages);
@@ -49,6 +50,7 @@ const setupWhatsAppHarness = async ({
   try {
     state.logger = { info() {}, error() {}, warn() {}, debug() {} };
     state.settings.oneWay = oneWay;
+    state.settings.NewsletterMediaUrlFallback = false;
     state.lastMessages = {};
     state.startTime = 0;
     state.sentMessages.clear();
@@ -158,6 +160,7 @@ const setupWhatsAppHarness = async ({
       state.logger = originalLogger;
       state.settings.oneWay = originalOneWay;
       state.settings.MirrorWAStatuses = originalMirrorWAStatuses;
+      state.settings.NewsletterMediaUrlFallback = originalNewsletterMediaUrlFallback;
       state.lastMessages = originalLastMessages;
       state.startTime = originalStartTime;
       restoreSet(state.sentMessages, originalSentMessages);
@@ -183,6 +186,7 @@ const setupWhatsAppHarness = async ({
     state.logger = originalLogger;
     state.settings.oneWay = originalOneWay;
     state.settings.MirrorWAStatuses = originalMirrorWAStatuses;
+    state.settings.NewsletterMediaUrlFallback = originalNewsletterMediaUrlFallback;
     state.lastMessages = originalLastMessages;
     state.startTime = originalStartTime;
     restoreSet(state.sentMessages, originalSentMessages);
@@ -1621,36 +1625,16 @@ test('Newsletter replies without quote mapping send without fallback reply-conte
   }
 });
 
-test('Newsletter media sends infer image type when Discord attachment contentType is missing', async () => {
+test('Newsletter image attachments with fallback disabled are not sent to WhatsApp media', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
   try {
-    utils.whatsapp.createDocumentContent = (attachment) => {
-      const majorType = String(attachment?.contentType || '').split('/')[0];
-      if (majorType === 'image' || majorType === 'video' || majorType === 'audio') {
-        return { [majorType]: { url: attachment.url } };
-      }
-      return {
-        document: { url: attachment.url },
-        fileName: attachment.name,
-        mimetype: attachment.contentType,
-      };
-    };
-
-    harness.fakeClient.sendMessage = async (jid, content, options) => {
-      harness.fakeClient.sendCalls.push({ jid, content, options });
-      if (typeof jid === 'string' && jid.endsWith('@newsletter') && content?.document) {
-        throw new Error('newsletter rejected document media');
-      }
-      harness.fakeClient._sendCounter += 1;
-      return { key: { id: `sent-${harness.fakeClient._sendCounter}`, remoteJid: jid, server_id: `server-${harness.fakeClient._sendCounter}` } };
-    };
-
     const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==';
     const attachmentUrl = `data:image/png;base64,${pngBase64}`;
 
+    const notices = [];
     harness.fakeClient.ev.emit('discordMessage', {
       jid: '120363123456789@newsletter',
-      forwardContext: { isForwarded: true, sourceChannelId: 'chan-a', sourceMessageId: 'm-1', sourceGuildId: 'guild-a' },
+      forwardContext: null,
       message: {
         id: 'dc-newsletter-infer-image',
         content: '',
@@ -1658,65 +1642,38 @@ test('Newsletter media sends infer image type when Discord attachment contentTyp
         webhookId: null,
         author: { username: 'BridgeUser' },
         member: { displayName: 'BridgeUser' },
-        channel: { send: async () => {} },
-        attachments: new Map(),
-        stickers: new Map(),
-        embeds: [],
-        wa2dcForwardSnapshot: {
-          content: '',
-          attachments: [{
+        channel: { send: async (value) => { notices.push(value); } },
+        attachments: new Map([
+          ['attachment-1', {
+            id: 'attachment-1',
             url: attachmentUrl,
             name: 'photo.png',
+            contentType: 'image/png',
           }],
-        },
+        ]),
+        stickers: new Map(),
+        embeds: [],
         mentions: { users: new Map(), members: new Map(), roles: new Map() },
       },
     });
 
     await delay(200);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 1);
-    assert.equal(Buffer.isBuffer(harness.fakeClient.sendCalls[0]?.content?.image), true);
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.mimetype, 'image/jpeg');
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.document, undefined);
+    assert.equal(harness.fakeClient.sendCalls.length, 0);
+    assert.equal(notices.length, 1);
+    assert.ok(String(notices[0]).includes('fallback is disabled'));
   } finally {
     harness.cleanup();
   }
 });
 
-test('Newsletter voice note sends infer audio type and keep ptt flag when contentType is missing', async () => {
+test('Newsletter unsupported attachments are skipped with FAQ notice', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
   try {
-    utils.whatsapp.createDocumentContent = (attachment) => {
-      const majorType = String(attachment?.contentType || '').split('/')[0];
-      if (majorType === 'audio') {
-        return {
-          audio: { url: attachment.url },
-          ...(attachment.name.toLowerCase().endsWith('.ogg') ? { ptt: true } : {}),
-        };
-      }
-      if (majorType === 'image' || majorType === 'video') {
-        return { [majorType]: { url: attachment.url } };
-      }
-      return {
-        document: { url: attachment.url },
-        fileName: attachment.name,
-        mimetype: attachment.contentType,
-      };
-    };
-
-    harness.fakeClient.sendMessage = async (jid, content, options) => {
-      harness.fakeClient.sendCalls.push({ jid, content, options });
-      if (typeof jid === 'string' && jid.endsWith('@newsletter') && content?.document) {
-        throw new Error('newsletter rejected document media');
-      }
-      harness.fakeClient._sendCounter += 1;
-      return { key: { id: `sent-${harness.fakeClient._sendCounter}`, remoteJid: jid, server_id: `server-${harness.fakeClient._sendCounter}` } };
-    };
-
+    const notices = [];
     harness.fakeClient.ev.emit('discordMessage', {
       jid: '120363123456789@newsletter',
-      forwardContext: { isForwarded: true, sourceChannelId: 'chan-a', sourceMessageId: 'm-1', sourceGuildId: 'guild-a' },
+      forwardContext: null,
       message: {
         id: 'dc-newsletter-infer-voice',
         content: '',
@@ -1724,35 +1681,36 @@ test('Newsletter voice note sends infer audio type and keep ptt flag when conten
         webhookId: null,
         author: { username: 'BridgeUser' },
         member: { displayName: 'BridgeUser' },
-        channel: { send: async () => {} },
-        attachments: new Map(),
+        channel: { send: async (value) => { notices.push(value); } },
+        attachments: new Map([
+          ['attachment-1', {
+            id: 'attachment-1',
+            url: 'https://cdn.discordapp.com/attachments/123/456/voice-message.ogg',
+            name: 'document.pdf',
+            contentType: 'application/pdf',
+          }],
+        ]),
         stickers: new Map(),
         embeds: [],
-        wa2dcForwardSnapshot: {
-          content: '',
-          attachments: [{
-            url: 'https://cdn.discordapp.com/attachments/123/456/voice-message.ogg',
-            name: 'voice-message.ogg',
-          }],
-        },
         mentions: { users: new Map(), members: new Map(), roles: new Map() },
       },
     });
 
-    await delay(0);
+    await delay(80);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 1);
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.audio?.url, 'https://cdn.discordapp.com/attachments/123/456/voice-message.ogg');
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.ptt, true);
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.document, undefined);
+    assert.equal(harness.fakeClient.sendCalls.length, 0);
+    assert.equal(notices.length, 1);
+    assert.ok(String(notices[0]).includes('allow only image/video'));
+    assert.ok(String(notices[0]).includes('https://faq.whatsapp.com/549900560675125'));
   } finally {
     harness.cleanup();
   }
 });
 
-test('Newsletter attachment failures fall back to text/link send', async () => {
+test('Newsletter URL fallback enabled sends image attachments as plain links', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
   try {
+    state.settings.NewsletterMediaUrlFallback = true;
     utils.whatsapp.createDocumentContent = (attachment) => ({
       document: { url: attachment.url },
       fileName: attachment.name,
@@ -1761,13 +1719,11 @@ test('Newsletter attachment failures fall back to text/link send', async () => {
 
     harness.fakeClient.sendMessage = async (jid, content, options) => {
       harness.fakeClient.sendCalls.push({ jid, content, options });
-      if (content?.document) {
-        throw new Error('newsletter media rejected');
-      }
       harness.fakeClient._sendCounter += 1;
       return { key: { id: `sent-${harness.fakeClient._sendCounter}`, remoteJid: jid } };
     };
 
+    const notices = [];
     harness.fakeClient.ev.emit('discordMessage', {
       jid: '120363123456789@newsletter',
       forwardContext: { isForwarded: true, sourceChannelId: 'chan-a', sourceMessageId: 'm-1', sourceGuildId: 'guild-a' },
@@ -1778,7 +1734,7 @@ test('Newsletter attachment failures fall back to text/link send', async () => {
         webhookId: null,
         author: { username: 'BridgeUser' },
         member: { displayName: 'BridgeUser' },
-        channel: { send: async () => {} },
+        channel: { send: async (value) => { notices.push(value); } },
         attachments: new Map(),
         stickers: new Map(),
         embeds: [],
@@ -1796,45 +1752,22 @@ test('Newsletter attachment failures fall back to text/link send', async () => {
 
     await delay(50);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 2);
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.document?.url, 'https://example.com/file.png');
-    assert.equal(harness.fakeClient.sendCalls[1]?.content?.text, 'Forwarded\nsnapshot text https://example.com/file.png');
+    assert.equal(harness.fakeClient.sendCalls.length, 1);
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, 'Forwarded\nsnapshot text https://example.com/file.png');
+    assert.equal(notices.length, 1);
+    assert.ok(String(notices[0]).includes('fallback is enabled'));
   } finally {
     harness.cleanup();
   }
 });
 
-test('Newsletter attachment ack rejection falls back to text/link send', async () => {
+test('Newsletter URL fallback disabled drops image attachments and posts a notice', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
   try {
-    utils.whatsapp.createDocumentContent = (attachment) => ({
-      image: { url: attachment.url },
-      mimetype: attachment.contentType,
-    });
     const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==';
     const attachmentUrl = `data:image/png;base64,${pngBase64}`;
 
-    harness.fakeClient.sendMessage = async (jid, content, options) => {
-      harness.fakeClient.sendCalls.push({ jid, content, options });
-      harness.fakeClient._sendCounter += 1;
-      const isMediaSend = Boolean(content?.image || content?.video || content?.audio || content?.document);
-      const outboundId = isMediaSend
-        ? `ack-media-reject-${harness.fakeClient._sendCounter}`
-        : `ack-media-fallback-${harness.fakeClient._sendCounter}`;
-      if (isMediaSend) {
-        setTimeout(() => {
-          harness.fakeClient.ev.emit('messages.update', [{
-            key: { id: outboundId, remoteJid: jid, fromMe: true },
-            update: {
-              status: WAMessageStatus.ERROR,
-              messageStubParameters: ['479'],
-            },
-          }]);
-        }, 120);
-      }
-      return { key: { id: outboundId, remoteJid: jid, server_id: `server-${harness.fakeClient._sendCounter}` } };
-    };
-
+    const notices = [];
     harness.fakeClient.ev.emit('discordMessage', {
       jid: '120363123456789@newsletter',
       forwardContext: null,
@@ -1845,7 +1778,7 @@ test('Newsletter attachment ack rejection falls back to text/link send', async (
         webhookId: null,
         author: { username: 'BridgeUser' },
         member: { displayName: 'BridgeUser' },
-        channel: { send: async () => {} },
+        channel: { send: async (value) => { notices.push(value); } },
         attachments: new Map([
           ['attachment-1', {
             id: 'attachment-1',
@@ -1860,56 +1793,37 @@ test('Newsletter attachment ack rejection falls back to text/link send', async (
       },
     });
 
-    await delay(3000);
+    await delay(200);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 2);
-    assert.equal(Buffer.isBuffer(harness.fakeClient.sendCalls[0]?.content?.image), true);
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.mimetype, 'image/jpeg');
-    assert.equal(
-      harness.fakeClient.sendCalls[1]?.content?.text,
-      attachmentUrl,
-    );
-    assert.equal(harness.fakeClient.sendCalls[1]?.options?.getUrlInfo, undefined);
+    assert.equal(harness.fakeClient.sendCalls.length, 0);
+    assert.equal(notices.length, 1);
+    assert.ok(String(notices[0]).includes('fallback is disabled'));
   } finally {
     harness.cleanup();
   }
 });
 
-test('Newsletter PNG attachments are normalized to JPEG before send attempt', async () => {
+test('Newsletter URL fallback enabled never sends WhatsApp media payloads', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
   try {
-    utils.whatsapp.createDocumentContent = (attachment) => ({
-      image: { url: attachment.url },
-      mimetype: attachment.contentType,
-    });
-
-    harness.fakeClient.sendMessage = async (jid, content, options) => {
-      harness.fakeClient.sendCalls.push({ jid, content, options });
-      if (content?.image) {
-        throw new Error('force-fallback-after-conversion');
-      }
-      harness.fakeClient._sendCounter += 1;
-      return { key: { id: `newsletter-jpeg-fallback-${harness.fakeClient._sendCounter}`, remoteJid: jid } };
-    };
-
-    const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==';
-    const pngDataUrl = `data:image/png;base64,${pngBase64}`;
+    state.settings.NewsletterMediaUrlFallback = true;
+    const notices = [];
 
     harness.fakeClient.ev.emit('discordMessage', {
       jid: '120363123456789@newsletter',
       forwardContext: null,
       message: {
-        id: 'dc-newsletter-png-normalize',
-        content: '',
-        cleanContent: '',
+        id: 'dc-newsletter-url-fallback-no-media',
+        content: 'caption text',
+        cleanContent: 'caption text',
         webhookId: null,
         author: { username: 'BridgeUser' },
         member: { displayName: 'BridgeUser' },
-        channel: { send: async () => {} },
+        channel: { send: async (value) => { notices.push(value); } },
         attachments: new Map([
           ['attachment-1', {
             id: 'attachment-1',
-            url: pngDataUrl,
+            url: 'https://example.com/newsletter-photo.png',
             name: 'newsletter-photo.png',
             contentType: 'image/png',
           }],
@@ -1922,56 +1836,48 @@ test('Newsletter PNG attachments are normalized to JPEG before send attempt', as
 
     await delay(200);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 2);
-    assert.equal(Buffer.isBuffer(harness.fakeClient.sendCalls[0]?.content?.image), true);
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.mimetype, 'image/jpeg');
-    assert.equal(
-      harness.fakeClient.sendCalls[1]?.content?.text,
-      pngDataUrl,
-    );
+    assert.equal(harness.fakeClient.sendCalls.length, 1);
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, 'caption text https://example.com/newsletter-photo.png');
+    assert.equal(Boolean(harness.fakeClient.sendCalls[0]?.content?.image), false);
+    assert.equal(Boolean(harness.fakeClient.sendCalls[0]?.content?.video), false);
+    assert.equal(Boolean(harness.fakeClient.sendCalls[0]?.content?.document), false);
+    assert.equal(notices.length, 1);
+    assert.ok(String(notices[0]).includes('fallback is enabled'));
   } finally {
     harness.cleanup();
   }
 });
 
-test('Newsletter image attachments with jpeg mimetype are still bufferized before send attempt', async () => {
+test('Newsletter URL fallback enabled keeps only image/video links and notifies for unsupported files', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
   try {
-    utils.whatsapp.createDocumentContent = (attachment) => ({
-      image: { url: attachment.url },
-      mimetype: attachment.contentType,
-    });
-
-    harness.fakeClient.sendMessage = async (jid, content, options) => {
-      harness.fakeClient.sendCalls.push({ jid, content, options });
-      if (content?.image) {
-        throw new Error('force-fallback-after-bufferize');
-      }
-      harness.fakeClient._sendCounter += 1;
-      return { key: { id: `newsletter-jpeg-bufferized-${harness.fakeClient._sendCounter}`, remoteJid: jid } };
-    };
-
-    const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==';
-    const pngDataUrl = `data:image/png;base64,${pngBase64}`;
+    state.settings.NewsletterMediaUrlFallback = true;
+    const notices = [];
 
     harness.fakeClient.ev.emit('discordMessage', {
       jid: '120363123456789@newsletter',
       forwardContext: null,
       message: {
-        id: 'dc-newsletter-jpeg-bufferize',
+        id: 'dc-newsletter-url-fallback-mixed',
         content: '',
         cleanContent: '',
         webhookId: null,
         author: { username: 'BridgeUser' },
         member: { displayName: 'BridgeUser' },
-        channel: { send: async () => {} },
+        channel: { send: async (value) => { notices.push(value); } },
         attachments: new Map([
           ['attachment-1', {
             id: 'attachment-1',
-            url: pngDataUrl,
+            url: 'https://example.com/newsletter-photo.jpg',
             name: 'newsletter-photo.jpg',
             contentType: 'image/jpeg',
           }],
+          ['attachment-2', {
+            id: 'attachment-2',
+            url: 'https://example.com/newsletter-doc.pdf',
+            name: 'newsletter-doc.pdf',
+            contentType: 'application/pdf',
+          }],
         ]),
         stickers: new Map(),
         embeds: [],
@@ -1981,52 +1887,40 @@ test('Newsletter image attachments with jpeg mimetype are still bufferized befor
 
     await delay(200);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 2);
-    assert.equal(Buffer.isBuffer(harness.fakeClient.sendCalls[0]?.content?.image), true);
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.mimetype, 'image/jpeg');
-    assert.equal(
-      harness.fakeClient.sendCalls[1]?.content?.text,
-      pngDataUrl,
-    );
+    assert.equal(harness.fakeClient.sendCalls.length, 1);
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, 'https://example.com/newsletter-photo.jpg');
+    assert.equal(Boolean(harness.fakeClient.sendCalls[0]?.content?.image), false);
+    assert.equal(Boolean(harness.fakeClient.sendCalls[0]?.content?.video), false);
+    assert.equal(Boolean(harness.fakeClient.sendCalls[0]?.content?.document), false);
+    assert.equal(notices.length, 2);
+    assert.ok(notices.some((value) => String(value).includes('allow only image/video')));
+    assert.ok(notices.some((value) => String(value).includes('https://faq.whatsapp.com/549900560675125')));
+    assert.ok(notices.some((value) => String(value).includes('fallback is enabled')));
   } finally {
     harness.cleanup();
   }
 });
 
-test('Newsletter attachment send errors use one media attempt then text/link fallback', async () => {
+test('Newsletter URL fallback disabled keeps text and drops attachment links', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
   try {
-    utils.whatsapp.createDocumentContent = (attachment) => ({
-      image: { url: attachment.url },
-      mimetype: attachment.contentType,
-    });
-    const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==';
-    const attachmentUrl = `data:image/png;base64,${pngBase64}`;
-
-    harness.fakeClient.sendMessage = async (jid, content, options) => {
-      harness.fakeClient.sendCalls.push({ jid, content, options });
-      if (content?.image) {
-        throw new Error('newsletter URL media rejected');
-      }
-      harness.fakeClient._sendCounter += 1;
-      return { key: { id: `buffer-retry-success-${harness.fakeClient._sendCounter}`, remoteJid: jid, server_id: `buffer-retry-server-${harness.fakeClient._sendCounter}` } };
-    };
+    const notices = [];
 
     harness.fakeClient.ev.emit('discordMessage', {
       jid: '120363123456789@newsletter',
       forwardContext: null,
       message: {
-        id: 'dc-newsletter-buffer-retry',
-        content: '',
-        cleanContent: '',
+        id: 'dc-newsletter-disabled-text-only',
+        content: 'message body',
+        cleanContent: 'message body',
         webhookId: null,
         author: { username: 'BridgeUser' },
         member: { displayName: 'BridgeUser' },
-        channel: { send: async () => {} },
+        channel: { send: async (value) => { notices.push(value); } },
         attachments: new Map([
           ['attachment-1', {
             id: 'attachment-1',
-            url: attachmentUrl,
+            url: 'https://example.com/newsletter-photo.png',
             name: 'newsletter-photo.png',
             contentType: 'image/png',
           }],
@@ -2039,12 +1933,10 @@ test('Newsletter attachment send errors use one media attempt then text/link fal
 
     await delay(80);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 2);
-    assert.equal(Boolean(harness.fakeClient.sendCalls[0]?.content?.image), true);
-    assert.equal(
-      harness.fakeClient.sendCalls[1]?.content?.text,
-      attachmentUrl,
-    );
+    assert.equal(harness.fakeClient.sendCalls.length, 1);
+    assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, 'message body');
+    assert.equal(notices.length, 1);
+    assert.ok(String(notices[0]).includes('fallback is disabled'));
   } finally {
     harness.cleanup();
   }

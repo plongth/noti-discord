@@ -3513,6 +3513,26 @@ const commandHandlers = {
       await ctx.reply(`Uploading attachments to WhatsApp is set to ${state.settings.UploadAttachments}.`);
     },
   },
+  newsletterurlfallback: {
+    description: 'Toggle temporary URL fallback for newsletter image/video attachments.',
+    options: [
+      {
+        name: 'enabled',
+        description: 'Temporary Baileys workaround: send newsletter image/video attachments as plain links.',
+        type: ApplicationCommandOptionTypes.BOOLEAN,
+        required: true,
+      },
+    ],
+    async execute(ctx) {
+      const enabled = Boolean(ctx.getBooleanOption('enabled'));
+      state.settings.NewsletterMediaUrlFallback = enabled;
+      await ctx.reply(
+        enabled
+          ? 'Newsletter media URL fallback is enabled. This is a temporary workaround until upstream Baileys newsletter media posting is fixed. Image/video attachments will be sent as plain links.'
+          : 'Newsletter media URL fallback is disabled. Until upstream Baileys newsletter media posting is fixed, image/video attachments will not be sent to newsletters.',
+      );
+    },
+  },
   waembeds: {
     description: 'Toggle mirroring Discord embeds to WhatsApp.',
     options: [

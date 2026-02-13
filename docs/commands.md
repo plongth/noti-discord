@@ -44,6 +44,14 @@ Usage: `/setpinduration duration:<24h|7d|30d>`
 
 Once a newsletter is linked to a Discord channel, regular outbound sends flow through the same `sendMessage(...)` bridge path used for DMs/groups (no special send command needed). Newsletter edits/deletes from Discord are not currently supported by Baileys, so WA2DC shows an in-channel reminder to edit/delete directly in WhatsApp on phone. Reactions are routed through the newsletter reaction API.
 
+Important: Until upstream Baileys newsletter image/video posting is fixed, use `/newsletterurlfallback enabled:true` as the temporary alternative for newsletter image/video attachments.
+
+Newsletter attachment behavior:
+
+- WhatsApp newsletter posting currently supports only image/video media from WA2DC.
+- Other attachment types are skipped, and WA2DC posts a notice with WhatsApp’s guidance: https://faq.whatsapp.com/549900560675125
+- URL fallback for newsletter image/video attachments is controlled by `/newsletterurlfallback` (default: disabled) and is the temporary workaround for current upstream Baileys newsletter media restrictions.
+
 ### `/newslettercreate`
 Create a WhatsApp newsletter and automatically link it to a Discord channel.  
 Usage: `/newslettercreate name:"title" description:"optional text"`
@@ -127,6 +135,13 @@ Usage: `/newsletterdemote user:<jid or number> jid:<optional ...@newsletter>`
 ### `/newsletterdelete`
 Delete a newsletter (irreversible) and remove its local bridge mapping.  
 Usage: `/newsletterdelete confirm:true jid:<optional ...@newsletter>`
+
+### `/newsletterurlfallback`
+Toggle the temporary plain-URL workaround for newsletter image/video attachments.  
+Usage: `/newsletterurlfallback enabled:<true|false>`  
+When enabled, WA2DC sends image/video attachments as plain links (no thumbnail/attachment payload).  
+This is the recommended temporary alternative until upstream Baileys newsletter image/video posting is fixed.  
+When disabled (default), image/video attachments are not sent to newsletters and WA2DC posts an in-channel explanation.
 
 ---
 

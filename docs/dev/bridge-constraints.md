@@ -44,12 +44,13 @@ Routing may be restricted by deployment settings. Message-flow changes must pres
   on Discord -> WhatsApp sends)
 - newsletter delivery mode for WhatsApp `@newsletter` chats:
   outbound sends should use standard `sendMessage(...)` payloads like DMs/groups where possible.
-  normalize non-JPEG outbound image attachments (for example PNG/WebP/GIF) to JPEG buffers before newsletter media send, because WhatsApp may ack-reject raw non-JPEG image payloads.
-  keep the newsletter image upload-path workaround active (`/o1/` -> `/m1/` directPath/mediaUrl rewrite) until upstream Baileys resolves the newsletter media route bug.
+  image/video attachments should follow `state.settings.NewsletterMediaUrlFallback`:
+  when enabled, send them as plain URLs (no WhatsApp media payload) as a temporary workaround until upstream Baileys newsletter media posting is fixed.
+  when disabled (default), do not send image/video attachments; emit an in-channel explanation.
+  non-image/video attachments should be skipped with a user-facing notice and WhatsApp FAQ link (`https://faq.whatsapp.com/549900560675125`).
   newsletter edit/delete from Discord are intentionally not dispatched to WhatsApp; emit a Discord reminder to perform edit/delete in the WhatsApp phone app instead.
   consume raw newsletter `live_updates` notifications (when present) to map pending outbound IDs to `server_id` values as early as possible for supported flows.
   reactions should use `newsletterReactMessage(jid, serverId, reaction?)` when available.
-  when newsletter media sends fail or are ack-rejected, do not fan out into multiple newsletter media variants; keep one media attempt per attachment, then fall back to text/link.
   optional send-side hardening (ack-aware retry paths and quote fallback behavior) can be enabled with `WA2DC_NEWSLETTER_SPECIAL_FLOW=1`.
   Poll sends to newsletters should still try interactive payload first, then fall back to text on send or ack rejection (commonly ack error `479`).
   Mirror incoming WhatsApp newsletter reactions via `newsletter.reaction` and/or raw `live_updates` notifications, keyed by `server_id`.

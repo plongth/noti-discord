@@ -9,6 +9,7 @@ const state = {
     WASenderPlatformSuffix: false,
     DiscordEmbedsToWhatsApp: false,
     UploadAttachments: true,
+    NewsletterMediaUrlFallback: false,
     Token: '',
     GuildID: '',
     Categories: [],
