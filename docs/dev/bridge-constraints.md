@@ -45,6 +45,7 @@ Routing may be restricted by deployment settings. Message-flow changes must pres
 - newsletter delivery mode for WhatsApp `@newsletter` chats:
   outbound sends should use standard `sendMessage(...)` payloads like DMs/groups where possible.
   normalize non-JPEG outbound image attachments (for example PNG/WebP/GIF) to JPEG buffers before newsletter media send, because WhatsApp may ack-reject raw non-JPEG image payloads.
+  keep the newsletter image upload-path workaround active (`/o1/` -> `/m1/` directPath/mediaUrl rewrite) until upstream Baileys resolves the newsletter media route bug.
   newsletter edit/delete from Discord are intentionally not dispatched to WhatsApp; emit a Discord reminder to perform edit/delete in the WhatsApp phone app instead.
   consume raw newsletter `live_updates` notifications (when present) to map pending outbound IDs to `server_id` values as early as possible for supported flows.
   reactions should use `newsletterReactMessage(jid, serverId, reaction?)` when available.
