@@ -1482,6 +1482,43 @@ const resolveNewsletterJidFromCommand = async (ctx, { optionName = 'jid' } = {})
   return jid;
 };
 
+const resolveNewsletterJidFromInviteOption = async (ctx, { optionName = 'invite' } = {}) => {
+  const rawOption = ctx.getStringOption(optionName);
+  if (!rawOption) {
+    return null;
+  }
+
+  const invite = parseNewsletterInvite(rawOption);
+  const inviteCode = invite?.code?.trim();
+  if (!inviteCode) {
+    await ctx.reply('Could not parse a newsletter invite code from `invite`.');
+    return null;
+  }
+
+  const fetchMetadata = await requireNewsletterMethod(ctx, 'newsletterMetadata');
+  if (!fetchMetadata) {
+    return null;
+  }
+
+  let metadata;
+  try {
+    metadata = await fetchMetadata('invite', inviteCode);
+  } catch (err) {
+    state.logger?.error({ err, inviteCode }, 'Failed to resolve newsletter invite metadata');
+    await ctx.reply('Failed to resolve newsletter metadata from the provided invite.');
+    return null;
+  }
+
+  const jid = extractNewsletterJid(metadata || {});
+  if (!jid) {
+    await ctx.replyPartitioned(
+      `Could not resolve a newsletter JID from invite \`${invite?.link || inviteCode}\`.\n\`\`\`json\n${formatJsonForReply(metadata)}\n\`\`\``
+    );
+    return null;
+  }
+  return jid;
+};
+
 const resolveNewsletterJidForDebug = (ctx, { optionName = 'jid' } = {}) => {
   const rawOption = ctx.getStringOption(optionName);
   if (rawOption) {
@@ -1909,13 +1946,24 @@ const commandHandlers = {
         type: ApplicationCommandOptionTypes.STRING,
         required: false,
       },
+      {
+        name: 'invite',
+        description: 'Newsletter invite code or link (optional alternative to jid).',
+        type: ApplicationCommandOptionTypes.STRING,
+        required: false,
+      },
     ],
     async execute(ctx) {
       const followNewsletter = await requireNewsletterMethod(ctx, 'newsletterFollow');
       if (!followNewsletter) {
         return;
       }
-      const jid = await resolveNewsletterJidFromCommand(ctx);
+
+      const rawJidOption = ctx.getStringOption('jid');
+      const rawInviteOption = ctx.getStringOption('invite');
+      const jid = rawJidOption || !rawInviteOption
+        ? await resolveNewsletterJidFromCommand(ctx)
+        : await resolveNewsletterJidFromInviteOption(ctx);
       if (!jid) {
         return;
       }
@@ -2323,61 +2371,6 @@ const commandHandlers = {
       }
       lines.push('', 'Raw debug payload:', `\`\`\`json\n${formatJsonForReply(debugPayload)}\n\`\`\``);
       await ctx.replyPartitioned(lines.join('\n'));
-    },
-  },
-  newsletterreact: {
-    description: 'React/unreact to a newsletter message.',
-    options: [
-      {
-        name: 'serverid',
-        description: 'Target newsletter server message ID.',
-        type: ApplicationCommandOptionTypes.STRING,
-        required: true,
-      },
-      {
-        name: 'reaction',
-        description: 'Emoji reaction code (omit to remove reaction).',
-        type: ApplicationCommandOptionTypes.STRING,
-        required: false,
-      },
-      {
-        name: 'jid',
-        description: 'Target newsletter JID (optional if this channel is linked).',
-        type: ApplicationCommandOptionTypes.STRING,
-        required: false,
-      },
-    ],
-    async execute(ctx) {
-      const reactMessage = await requireNewsletterMethod(ctx, 'newsletterReactMessage');
-      if (!reactMessage) {
-        return;
-      }
-      const jid = await resolveNewsletterJidFromCommand(ctx);
-      if (!jid) {
-        return;
-      }
-
-      const serverId = ctx.getStringOption('serverid')?.trim();
-      if (!serverId) {
-        await ctx.reply('Please provide `serverid`.');
-        return;
-      }
-      const reactionRaw = ctx.getStringOption('reaction');
-      const reaction = reactionRaw?.trim() || undefined;
-
-      try {
-        await reactMessage(jid, serverId, reaction);
-      } catch (err) {
-        state.logger?.error({ err, jid, serverId, reaction }, 'Failed to react to newsletter message');
-        await ctx.reply(`Failed to apply reaction for \`${formatNewsletterJidForReply(jid)}\` message \`${serverId}\`.`);
-        return;
-      }
-
-      if (reaction) {
-        await ctx.reply(`Applied reaction to \`${formatNewsletterJidForReply(jid)}\` message \`${serverId}\`.`);
-        return;
-      }
-      await ctx.reply(`Removed reaction from \`${formatNewsletterJidForReply(jid)}\` message \`${serverId}\`.`);
     },
   },
   newslettersubscribeupdates: {

@@ -75,7 +75,8 @@ Usage: `/newslettersubscribers jid:<optional ...@newsletter>`
 
 ### `/newsletterfollow`
 Follow a newsletter.  
-Usage: `/newsletterfollow jid:<optional ...@newsletter>`
+Usage: `/newsletterfollow jid:<optional ...@newsletter> invite:<optional invite code or link>`
+If `jid` is omitted, WA2DC will try to resolve the newsletter via `invite`.
 
 ### `/newsletterunfollow`
 Unfollow a newsletter.  
@@ -105,12 +106,6 @@ Usage: `/newslettermessages jid:<optional ...@newsletter> count:<1-50> before:<u
 Inspect WA2DC mapping/debug data for a newsletter-linked Discord message.  
 Usage: `/newslettermessagedebug messageid:<discord message id> jid:<optional ...@newsletter>`  
 Shows Discord->WhatsApp ID mapping, resolved `server_id`, pending correlation, sent flags, cached ack errors, and recent per-message newsletter operation history.
-
-### `/newsletterreact`
-React to a newsletter message (or remove your reaction).  
-Usage: `/newsletterreact serverid:<newsletter message id> reaction:<optional emoji> jid:<optional ...@newsletter>`  
-If `reaction` is omitted, WA2DC removes your existing reaction for that message.
-You can also react directly with Discord emoji in linked newsletter channels; WA2DC routes these through the newsletter reaction API and waits briefly for newsletter `server_id` mapping when needed.
 
 ### `/newslettersubscribeupdates`
 Request newsletter live updates subscription metadata.  
