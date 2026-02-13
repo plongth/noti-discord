@@ -2599,66 +2599,23 @@ const connectToWhatsApp = async (retry = 1) => {
 
         const targetJid = normalizeSendJid(jid);
         const newsletterChat = isNewsletterJid(targetJid);
+        if (newsletterChat) {
+            noteNewsletterMessageDebug({
+                discordMessageId: message?.id,
+                jid: targetJid,
+                operation: 'Newsletter edit',
+                phase: 'unsupported',
+                details: {
+                    reason: 'baileys_newsletter_edit_unsupported',
+                },
+            });
+            await message?.channel?.send(
+                "Newsletter message editing isn't supported by Baileys yet. Please edit the message directly in WhatsApp on your phone.",
+            ).catch(() => {});
+            return;
+        }
         const candidateId = normalizeBridgeMessageId(state.lastMessages[message.id]);
         let messageId = candidateId;
-        if (newsletterChat) {
-            await ensureNewsletterLiveUpdatesSubscription(client, targetJid);
-            const resolvedServerId = await waitForNewsletterServerId({
-                discordMessageId: message.id,
-                candidateId: messageId,
-                timeoutMs: NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS,
-                pollMs: NEWSLETTER_SERVER_ID_WAIT_POLL_MS,
-            });
-            if (resolvedServerId) {
-                messageId = resolvedServerId;
-                state.lastMessages[message.id] = resolvedServerId;
-                state.lastMessages[resolvedServerId] = message.id;
-            } else {
-                const fetchedServerId = await resolveNewsletterServerIdFromFetch({
-                    client,
-                    jid: targetJid,
-                    discordMessageId: message.id,
-                    candidateId,
-                });
-                if (fetchedServerId) {
-                    messageId = fetchedServerId;
-                }
-            }
-            if (messageId && isLikelyNewsletterServerId(messageId)) {
-                state.lastMessages[message.id] = messageId;
-                state.lastMessages[messageId] = message.id;
-            } else if (candidateId) {
-                const sendAckError = getNewsletterAckError(candidateId);
-                if (sendAckError) {
-                    state.logger?.warn?.({
-                        jid: targetJid,
-                        discordMessageId: message?.id,
-                        candidateId,
-                        error: sendAckError,
-                    }, 'Skipping newsletter edit because original message was rejected by WhatsApp ack');
-                    await message.channel.send(
-                        `Couldn't edit this newsletter message because its original send failed (ack ${sendAckError}).`,
-                    ).catch(() => {});
-                    return;
-                }
-                state.logger?.warn?.({
-                    jid: targetJid,
-                    discordMessageId: message?.id,
-                    candidateId,
-                }, 'Timed out waiting for newsletter server ID before edit; falling back to outbound message ID');
-                messageId = candidateId;
-            } else {
-                state.logger?.warn?.({
-                    jid: targetJid,
-                    discordMessageId: message?.id,
-                    candidateId: messageId,
-                }, 'Timed out waiting for newsletter server ID before edit');
-                await message.channel.send(
-                    "Couldn't edit this newsletter message yet because a server message ID is still unavailable.",
-                ).catch(() => {});
-                return;
-            }
-        }
 
         const key = newsletterChat
             ? buildNewsletterActionKey({
@@ -2931,6 +2888,22 @@ const connectToWhatsApp = async (retry = 1) => {
 
         const targetJid = normalizeSendJid(jid);
         const newsletterChat = isNewsletterJid(targetJid);
+        if (newsletterChat) {
+            noteNewsletterMessageDebug({
+                discordMessageId,
+                jid: targetJid,
+                operation: 'Newsletter delete',
+                phase: 'unsupported',
+                details: {
+                    reason: 'baileys_newsletter_delete_unsupported',
+                },
+            });
+            await notifyLinkedDiscordChannel(
+                targetJid,
+                "Newsletter message deletion isn't supported by Baileys yet. Please delete the message directly in WhatsApp on your phone.",
+            );
+            return;
+        }
         const rawDeleteId = normalizeBridgeMessageId(id);
         const outboundCandidateId = rawDeleteId
             || normalizeBridgeMessageId(state.lastMessages[discordMessageId]);

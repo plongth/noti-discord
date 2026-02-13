@@ -4438,20 +4438,14 @@ client.on('messageUpdate', async (oldMessage, message) => {
     return;
   }
 
-  let messageId = state.lastMessages[message.id];
   if (newsletterChat) {
-    const resolvedServerId = await waitForNewsletterServerId({
-      discordMessageId: message.id,
-      candidateId: messageId,
-      timeoutMs: NEWSLETTER_SERVER_ID_WAIT_TIMEOUT_MS,
-      pollMs: NEWSLETTER_SERVER_ID_WAIT_POLL_MS,
-    });
-    if (resolvedServerId) {
-      messageId = resolvedServerId;
-      state.lastMessages[message.id] = resolvedServerId;
-      state.lastMessages[resolvedServerId] = message.id;
-    }
+    await message.channel.send(
+      "Newsletter message editing isn't supported by Baileys yet. Please edit the message directly in WhatsApp on your phone.",
+    );
+    return;
   }
+
+  let messageId = state.lastMessages[message.id];
   if (messageId == null) {
     if (message.author?.bot && !state.settings.redirectBots) {
       return;
@@ -4492,6 +4486,19 @@ client.on('messageDelete', async (message) => {
   }
   const normalizedWaIds = [...new Set(waIds.map((id) => normalizeBridgeMessageId(id)).filter(Boolean))];
   const newsletterChat = isNewsletterJid(jid);
+  if (newsletterChat) {
+    if (message.webhookId == null && !(message.author?.bot && !state.settings.redirectBots) && message.author?.id !== client.user.id) {
+      await message.channel.send(
+        "Newsletter message deletion isn't supported by Baileys yet. Please delete the message directly in WhatsApp on your phone.",
+      );
+    }
+    for (const waId of normalizedWaIds) {
+      delete state.lastMessages[waId];
+    }
+    delete state.lastMessages[message.id];
+    clearPinExpiryNotice(message.id);
+    return;
+  }
   const newsletterServerId = newsletterChat
     ? resolveNewsletterServerIdForDiscordMessage(message.id, state.lastMessages[message.id] || normalizedWaIds[0] || null)
     : null;

@@ -42,7 +42,7 @@ Usage: `/setpinduration duration:<24h|7d|30d>`
 
 ### Newsletters
 
-Once a newsletter is linked to a Discord channel, regular outbound sends flow through the same `sendMessage(...)` bridge path used for DMs/groups (no special send command needed). For edit/delete/reaction actions, WA2DC resolves/uses newsletter `server_id` values when available, auto-refreshes newsletter live update subscriptions, and can probe recent newsletter history for `server_id` fallback mapping before attempting outbound IDs. Reactions are routed through the newsletter reaction API.
+Once a newsletter is linked to a Discord channel, regular outbound sends flow through the same `sendMessage(...)` bridge path used for DMs/groups (no special send command needed). Newsletter edits/deletes from Discord are not currently supported by Baileys, so WA2DC shows an in-channel reminder to edit/delete directly in WhatsApp on phone. Reactions are routed through the newsletter reaction API.
 
 ### `/newslettercreate`
 Create a WhatsApp newsletter and automatically link it to a Discord channel.  

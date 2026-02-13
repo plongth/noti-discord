@@ -44,10 +44,8 @@ Routing may be restricted by deployment settings. Message-flow changes must pres
   on Discord -> WhatsApp sends)
 - newsletter delivery mode for WhatsApp `@newsletter` chats:
   outbound sends should use standard `sendMessage(...)` payloads like DMs/groups where possible.
-  edit/delete/reaction flows should resolve/use newsletter `server_id` mapping before dispatch.
-  for edit/delete requests, prefer key payloads with `server_id` when available; keep an `id`-key retry for compatibility fallback.
-  if upsert-driven `server_id` mapping is missing, try live-update subscription refresh and recent `newsletterFetchMessages(...)` lookups first; only then fall back to outbound IDs.
-  consume raw newsletter `live_updates` notifications (when present) to map pending outbound IDs to `server_id` values as early as possible.
+  newsletter edit/delete from Discord are intentionally not dispatched to WhatsApp; emit a Discord reminder to perform edit/delete in the WhatsApp phone app instead.
+  consume raw newsletter `live_updates` notifications (when present) to map pending outbound IDs to `server_id` values as early as possible for supported flows.
   reactions should use `newsletterReactMessage(jid, serverId, reaction?)` when available.
   when newsletter media sends fail or are ack-rejected, do not fan out into multiple newsletter media variants; keep one media attempt per attachment, then fall back to text/link.
   optional send-side hardening (ack-aware retry paths and quote fallback behavior) can be enabled with `WA2DC_NEWSLETTER_SPECIAL_FLOW=1`.

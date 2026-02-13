@@ -493,9 +493,18 @@ test('Discord reactions in newsletter chats use newsletter-specific API', async 
   }
 });
 
-test('Discord newsletter deletes use normalized server ids', async () => {
+test('Discord newsletter deletes notify manual action and skip WhatsApp delete', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  const originalGetChannel = utils.discord.getChannel;
   try {
+    const linkedNotices = [];
+    state.chats['1203630@newsletter'] = { channelId: 'chan-newsletter-1' };
+    utils.discord.getChannel = async (channelId) => (
+      channelId === 'chan-newsletter-1'
+        ? { send: async (value) => { linkedNotices.push(value); } }
+        : null
+    );
+
     harness.fakeClient.ev.emit('discordDelete', {
       jid: '1203630@newsletter',
       id: '  newsletter-server-id-1  ',
@@ -503,30 +512,31 @@ test('Discord newsletter deletes use normalized server ids', async () => {
 
     await delay(0);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 1);
-    assert.equal(harness.fakeClient.sendCalls[0]?.jid, '1203630@newsletter');
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.delete?.server_id, 'newsletter-server-id-1');
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.delete?.id, '');
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.delete?.remoteJid, '1203630@newsletter');
+    assert.equal(harness.fakeClient.sendCalls.length, 0);
+    assert.equal(linkedNotices.length, 1);
+    assert.match(linkedNotices[0], /Please delete the message directly in WhatsApp on your phone/i);
   } finally {
+    utils.discord.getChannel = originalGetChannel;
     harness.cleanup();
   }
 });
 
-test('Newsletter edit/reaction/delete wait for server ids before sending actions', async () => {
+test('Newsletter edit/delete notify manual action while reactions still wait for server ids', async () => {
   const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+  const originalGetChannel = utils.discord.getChannel;
   try {
-    const notices = [];
+    const editNotices = [];
+    const linkedNotices = [];
+    state.chats['1203630@newsletter'] = { channelId: 'chan-newsletter-2' };
+    utils.discord.getChannel = async (channelId) => (
+      channelId === 'chan-newsletter-2'
+        ? { send: async (value) => { linkedNotices.push(value); } }
+        : null
+    );
 
     setTimeout(() => {
-      state.lastMessages['server-edit-1'] = 'dc-news-edit-wait';
-      state.lastMessages['dc-news-edit-wait'] = 'server-edit-1';
-
       state.lastMessages['server-react-1'] = 'dc-news-react-wait';
       state.lastMessages['dc-news-react-wait'] = 'server-react-1';
-
-      state.lastMessages['server-delete-1'] = 'dc-news-delete-wait';
-      state.lastMessages['dc-news-delete-wait'] = 'server-delete-1';
     }, 120);
 
     harness.fakeClient.ev.emit('discordEdit', {
@@ -537,7 +547,7 @@ test('Newsletter edit/reaction/delete wait for server ids before sending actions
         content: 'edited',
         webhookId: null,
         author: { username: 'You' },
-        channel: { send: async (value) => { notices.push(value); } },
+        channel: { send: async (value) => { editNotices.push(value); } },
       },
     });
 
@@ -550,7 +560,7 @@ test('Newsletter edit/reaction/delete wait for server ids before sending actions
           id: 'dc-news-react-wait',
           webhookId: null,
           author: { username: 'You' },
-          channel: { send: async (value) => { notices.push(value); } },
+          channel: { send: async () => {} },
         },
       },
     });
@@ -563,20 +573,19 @@ test('Newsletter edit/reaction/delete wait for server ids before sending actions
 
     await delay(450);
 
-    assert.equal(notices.length, 0);
-    const editCall = harness.fakeClient.sendCalls.find((call) => call.content?.edit);
-    assert.ok(editCall);
-    assert.equal(editCall?.content?.edit?.server_id, 'server-edit-1');
-    assert.equal(editCall?.content?.edit?.id, '');
+    assert.equal(editNotices.length, 1);
+    assert.match(editNotices[0], /Please edit the message directly in WhatsApp on your phone/i);
+    assert.equal(linkedNotices.length, 1);
+    assert.match(linkedNotices[0], /Please delete the message directly in WhatsApp on your phone/i);
+    const newsletterEditOrDeleteCalls = harness.fakeClient.sendCalls.filter(
+      (call) => call.content?.edit || call.content?.delete,
+    );
+    assert.equal(newsletterEditOrDeleteCalls.length, 0);
 
     assert.equal(harness.fakeClient.newsletterReactionCalls.length, 1);
     assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.serverId, 'server-react-1');
-
-    const deleteCall = harness.fakeClient.sendCalls.find((call) => call.content?.delete);
-    assert.ok(deleteCall);
-    assert.equal(deleteCall?.content?.delete?.server_id, 'server-delete-1');
-    assert.equal(deleteCall?.content?.delete?.id, '');
   } finally {
+    utils.discord.getChannel = originalGetChannel;
     harness.cleanup();
   }
 });

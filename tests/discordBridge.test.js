@@ -456,7 +456,7 @@ test('Discord messageDelete emits discordDelete for bridged messages', async () 
   }
 });
 
-test('Discord messageDelete in newsletter channels emits server_id mapped discordDelete', async () => {
+test('Discord messageDelete in newsletter channels notifies manual WhatsApp delete and skips discordDelete', async () => {
   const originalDiscordUtils = {
     getGuild: utils.discord.getGuild,
     getControlChannel: utils.discord.getControlChannel,
@@ -545,20 +545,21 @@ test('Discord messageDelete in newsletter channels emits server_id mapped discor
     assert.equal(state.lastMessages['newsletter-server-id-1'], 'dc-news-1');
     assert.equal(state.lastMessages['dc-news-1'], 'newsletter-server-id-1');
 
+    const notices = [];
     fakeClient.emit('messageDelete', {
       id: 'dc-news-1',
       channelId: 'chan-1',
       webhookId: null,
       author: { id: 'user-1' },
-      channel: { send: async () => {} },
+      channel: { send: async (value) => { notices.push(value); } },
     });
     await delay(0);
 
-    assert.deepEqual(waEvents, [{
-      jid: '120363123456789@newsletter',
-      id: 'newsletter-server-id-1',
-      discordMessageId: 'dc-news-1',
-    }]);
+    assert.deepEqual(waEvents, []);
+    assert.equal(state.lastMessages['newsletter-server-id-1'], undefined);
+    assert.equal(state.lastMessages['dc-news-1'], undefined);
+    assert.equal(notices.length, 1);
+    assert.match(notices[0], /Please delete the message directly in WhatsApp on your phone/i);
   } finally {
     utils.discord.getGuild = originalDiscordUtils.getGuild;
     utils.discord.getControlChannel = originalDiscordUtils.getControlChannel;
@@ -578,7 +579,7 @@ test('Discord messageDelete in newsletter channels emits server_id mapped discor
   }
 });
 
-test('Discord messageDelete in newsletter channels waits for delayed server_id mapping', async () => {
+test('Discord messageDelete in newsletter channels does not wait for server_id mapping', async () => {
   const originalDiscordUtils = {
     getGuild: utils.discord.getGuild,
     getControlChannel: utils.discord.getControlChannel,
@@ -625,25 +626,19 @@ test('Discord messageDelete in newsletter channels waits for delayed server_id m
     const discordHandler = await importDiscordHandler('newsletter-message-delete-wait-server-id');
     state.dcClient = await discordHandler.start();
 
-    setTimeout(() => {
-      state.lastMessages['server-delayed-1'] = 'dc-news-delayed';
-      state.lastMessages['dc-news-delayed'] = 'server-delayed-1';
-    }, 120);
-
+    const notices = [];
     fakeClient.emit('messageDelete', {
       id: 'dc-news-delayed',
       channelId: 'chan-1',
       webhookId: null,
       author: { id: 'user-1' },
-      channel: { send: async () => {} },
+      channel: { send: async (value) => { notices.push(value); } },
     });
-    await delay(500);
+    await delay(0);
 
-    assert.deepEqual(waEvents, [{
-      jid: '120363123456789@newsletter',
-      id: 'server-delayed-1',
-      discordMessageId: 'dc-news-delayed',
-    }]);
+    assert.deepEqual(waEvents, []);
+    assert.equal(notices.length, 1);
+    assert.match(notices[0], /Please delete the message directly in WhatsApp on your phone/i);
   } finally {
     utils.discord.getGuild = originalDiscordUtils.getGuild;
     utils.discord.getControlChannel = originalDiscordUtils.getControlChannel;
@@ -660,7 +655,7 @@ test('Discord messageDelete in newsletter channels waits for delayed server_id m
   }
 });
 
-test('Discord newsletter deletes ignore outbound client ids while waiting for server_id mapping', async () => {
+test('Discord newsletter deletes clear local mappings and skip WhatsApp delete', async () => {
   const originalDiscordUtils = {
     getGuild: utils.discord.getGuild,
     getControlChannel: utils.discord.getControlChannel,
@@ -710,25 +705,21 @@ test('Discord newsletter deletes ignore outbound client ids while waiting for se
     const discordHandler = await importDiscordHandler('newsletter-message-delete-ignore-outbound-id');
     state.dcClient = await discordHandler.start();
 
-    setTimeout(() => {
-      state.lastMessages['server-delayed-outbound-1'] = 'dc-news-outbound';
-      state.lastMessages['dc-news-outbound'] = 'server-delayed-outbound-1';
-    }, 120);
-
+    const notices = [];
     fakeClient.emit('messageDelete', {
       id: 'dc-news-outbound',
       channelId: 'chan-1',
       webhookId: null,
       author: { id: 'user-1' },
-      channel: { send: async () => {} },
+      channel: { send: async (value) => { notices.push(value); } },
     });
-    await delay(500);
+    await delay(0);
 
-    assert.deepEqual(waEvents, [{
-      jid: '120363123456789@newsletter',
-      id: 'server-delayed-outbound-1',
-      discordMessageId: 'dc-news-outbound',
-    }]);
+    assert.deepEqual(waEvents, []);
+    assert.equal(state.lastMessages['dc-news-outbound'], undefined);
+    assert.equal(state.lastMessages['3EB0DD14CD06ABCE146147'], undefined);
+    assert.equal(notices.length, 1);
+    assert.match(notices[0], /Please delete the message directly in WhatsApp on your phone/i);
   } finally {
     utils.discord.getGuild = originalDiscordUtils.getGuild;
     utils.discord.getControlChannel = originalDiscordUtils.getControlChannel;
