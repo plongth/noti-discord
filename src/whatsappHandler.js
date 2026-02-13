@@ -19,6 +19,7 @@ import { createGroupRefreshScheduler } from './groupMetadataRefresh.js';
 import { getPollEncKey, getPollOptions } from './pollUtils.js';
 import { oneWayAllowsDiscordToWhatsApp } from './oneWay.js';
 import {
+    getNewsletterAckError,
     getNewsletterServerIdFromMessage,
     normalizeBridgeMessageId,
     noteNewsletterAckError,
@@ -1715,6 +1716,7 @@ const connectToWhatsApp = async (retry = 1) => {
                 notifyAckFailure = false,
                 retryWithoutQuotedOnAck = true,
                 forceNewsletterAck = false,
+                watchNewsletterAck = false,
             } = {},
         ) => {
             const sentMessage = await sendWithNewsletterQuoteFallback(content, sendOptions);
@@ -1725,7 +1727,33 @@ const connectToWhatsApp = async (retry = 1) => {
             });
             storeMessage(sentMessage);
             const shouldTrackNewsletterAck = newsletterChat && (useNewsletterSpecialFlow || forceNewsletterAck);
+            const notifyNewsletterAckFailure = async (ackErrorCode) => {
+                clearFailedNewsletterMapping({
+                    discordMessageId: message.id,
+                    sentMessage,
+                });
+                state.logger?.warn?.({
+                    jid: targetJid,
+                    discordMessageId: message.id,
+                    outboundId: sentMessage?.key?.id,
+                    serverId: getNewsletterServerIdFromMessage(sentMessage),
+                    error: ackErrorCode,
+                }, `${ackContext} was rejected by WhatsApp ack`);
+                if (notifyAckFailure) {
+                    await message.channel?.send(
+                        `Couldn't send this message to WhatsApp newsletter (ack ${ackErrorCode}).`,
+                    ).catch(() => {});
+                }
+            };
             if (!shouldTrackNewsletterAck) {
+                if (newsletterChat && watchNewsletterAck) {
+                    const ackWaitMs = newsletterAckWaitMsForSentMessage(sentMessage);
+                    void (async () => {
+                        const ackErrorCode = await waitForNewsletterAckError(sentMessage?.key?.id, ackWaitMs);
+                        if (!ackErrorCode) return;
+                        await notifyNewsletterAckFailure(ackErrorCode);
+                    })();
+                }
                 return { sentMessage, ackErrorCode: null };
             }
 
@@ -1735,11 +1763,11 @@ const connectToWhatsApp = async (retry = 1) => {
                 return { sentMessage, ackErrorCode: null };
             }
 
-            clearFailedNewsletterMapping({
-                discordMessageId: message.id,
-                sentMessage,
-            });
             if (useNewsletterSpecialFlow && retryWithoutQuotedOnAck && sendOptions?.quoted) {
+                clearFailedNewsletterMapping({
+                    discordMessageId: message.id,
+                    sentMessage,
+                });
                 const replyContext = await ensureNewsletterReplyFallbackContext();
                 const retryContent = cloneNewsletterSendContentWithReplyFallback(content, replyContext);
                 const retryOptions = { ...sendOptions };
@@ -1762,19 +1790,7 @@ const connectToWhatsApp = async (retry = 1) => {
                     },
                 );
             }
-            state.logger?.warn?.({
-                jid: targetJid,
-                discordMessageId: message.id,
-                outboundId: sentMessage?.key?.id,
-                serverId: getNewsletterServerIdFromMessage(sentMessage),
-                error: ackErrorCode,
-                ackWaitMs,
-            }, `${ackContext} was rejected by WhatsApp ack`);
-            if (notifyAckFailure) {
-                await message.channel?.send(
-                    `Couldn't send this message to WhatsApp newsletter (ack ${ackErrorCode}).`,
-                ).catch(() => {});
-            }
+            await notifyNewsletterAckFailure(ackErrorCode);
             return { sentMessage, ackErrorCode };
         };
 
@@ -1911,7 +1927,8 @@ const connectToWhatsApp = async (retry = 1) => {
         try {
             const { ackErrorCode } = await sendTrackedMessage(content, options, {
                 ackContext: 'Newsletter text send',
-                notifyAckFailure: useNewsletterSpecialFlow,
+                notifyAckFailure: newsletterChat,
+                watchNewsletterAck: newsletterChat,
             });
             if (ackErrorCode) {
                 return;
@@ -1954,6 +1971,19 @@ const connectToWhatsApp = async (retry = 1) => {
                 state.lastMessages[message.id] = resolvedServerId;
                 state.lastMessages[resolvedServerId] = message.id;
             } else if (candidateId) {
+                const sendAckError = getNewsletterAckError(candidateId);
+                if (sendAckError) {
+                    state.logger?.warn?.({
+                        jid: targetJid,
+                        discordMessageId: message?.id,
+                        candidateId,
+                        error: sendAckError,
+                    }, 'Skipping newsletter edit because original message was rejected by WhatsApp ack');
+                    await message.channel.send(
+                        `Couldn't edit this newsletter message because its original send failed (ack ${sendAckError}).`,
+                    ).catch(() => {});
+                    return;
+                }
                 state.logger?.warn?.({
                     jid: targetJid,
                     discordMessageId: message?.id,
@@ -2071,6 +2101,19 @@ const connectToWhatsApp = async (retry = 1) => {
                 return;
             }
             if (!serverId && candidateId) {
+                const sendAckError = getNewsletterAckError(candidateId);
+                if (sendAckError) {
+                    state.logger?.warn?.({
+                        jid: targetJid,
+                        discordMessageId: reaction?.message?.id,
+                        candidateId,
+                        error: sendAckError,
+                    }, 'Skipping newsletter reaction because original message was rejected by WhatsApp ack');
+                    await reaction?.message?.channel?.send(
+                        `Couldn't react because the original newsletter send failed (ack ${sendAckError}).`,
+                    ).catch(() => {});
+                    return;
+                }
                 state.logger?.warn?.({
                     jid: targetJid,
                     discordMessageId: reaction?.message?.id,
@@ -2147,6 +2190,21 @@ const connectToWhatsApp = async (retry = 1) => {
             return;
         }
         if (newsletterChat && !deleteId && outboundCandidateId) {
+            const sendAckError = getNewsletterAckError(outboundCandidateId);
+            if (sendAckError) {
+                state.logger?.warn?.({
+                    jid: targetJid,
+                    discordMessageId,
+                    id: rawDeleteId,
+                    candidateId: outboundCandidateId,
+                    error: sendAckError,
+                }, 'Skipping newsletter delete because original message was rejected by WhatsApp ack');
+                await notifyLinkedDiscordChannel(
+                    targetJid,
+                    `Couldn't delete this newsletter message because its original send failed (ack ${sendAckError}).`,
+                );
+                return;
+            }
             state.logger?.warn?.({
                 jid: targetJid,
                 discordMessageId,

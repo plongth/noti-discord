@@ -167,7 +167,15 @@ const waitForNewsletterAckError = async (messageId, timeoutMs = DEFAULT_NEWSLETT
   });
 };
 
+const getNewsletterAckError = (messageId) => {
+  const normalizedMessageId = normalizeBridgeMessageId(messageId);
+  if (!normalizedMessageId) return null;
+  pruneNewsletterAckErrors();
+  return newsletterAckErrors.get(normalizedMessageId)?.errorCode || null;
+};
+
 export {
+  getNewsletterAckError,
   getNewsletterServerIdFromMessage,
   isLikelyNewsletterServerId,
   normalizeBridgeMessageId,
