@@ -28,7 +28,7 @@
     "pino": "^8.21.0",
     "pino-pretty": "^13.1.2",
     "qrcode": "^1.5.3",
-    "undici": "^6.19.8"
+    "undici": "^6.23.0"
   },
   "devDependencies": {
     "docsify-cli": "^4.4.4",
@@ -41,6 +41,7 @@
   },
   "pkg": {},
   "overrides": {
+    "lodash": "4.17.23",
     "form-data": "4.0.5",
     "sharp": {
       "tar-fs": "3.1.1"
