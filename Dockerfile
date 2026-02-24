@@ -2,6 +2,7 @@
 
 FROM node:24-alpine
 WORKDIR /usr/local/WA2DC
+RUN chown node:node /usr/local/WA2DC
 
 COPY --chown=node:node package*.json ./
 USER node
