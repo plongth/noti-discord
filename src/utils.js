@@ -1437,11 +1437,14 @@ const updater = {
 		const sortedReleases = [...releases].sort((left, right) =>
 			compareReleases(right, left),
 		);
+		const sortedByTimestamp = [...releases].sort(
+			(left, right) => releaseSortTimestamp(right) - releaseSortTimestamp(left),
+		);
 
 		let release;
 		if (channel === "unstable") {
 			release =
-				sortedReleases.find((rel) => rel.prerelease) ||
+				sortedByTimestamp.find((rel) => rel.prerelease) ||
 				sortedReleases.find((rel) => !rel.prerelease);
 		} else {
 			release =
