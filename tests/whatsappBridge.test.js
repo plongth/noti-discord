@@ -1,2182 +1,2579 @@
-import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
-import { setTimeout as delay } from 'node:timers/promises';
-import test from 'node:test';
-import { WAMessageStatus } from '@whiskeysockets/baileys';
+import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
+import { WAMessageStatus } from "@whiskeysockets/baileys";
 
-import { resetClientFactoryOverrides, setClientFactoryOverrides } from '../src/clientFactories.js';
-import { resetNewsletterBridgeState } from '../src/newsletterBridge.js';
-import state from '../src/state.js';
-import storage from '../src/storage.js';
-import utils from '../src/utils.js';
-import messageStore from '../src/messageStore.js';
+import {
+	resetClientFactoryOverrides,
+	setClientFactoryOverrides,
+} from "../src/clientFactories.js";
+import messageStore from "../src/messageStore.js";
+import { resetNewsletterBridgeState } from "../src/newsletterBridge.js";
+import state from "../src/state.js";
+import storage from "../src/storage.js";
+import utils from "../src/utils.js";
 
 await storage.ensureInitialized();
 
 const snapshotObject = (value) => ({ ...value });
 const restoreObject = (target, snapshot) => {
-  Object.keys(target).forEach((key) => { delete target[key]; });
-  Object.assign(target, snapshot);
+	Object.keys(target).forEach((key) => {
+		delete target[key];
+	});
+	Object.assign(target, snapshot);
 };
 const snapshotSet = (value) => Array.from(value);
 const restoreSet = (target, snapshot) => {
-  target.clear();
-  snapshot.forEach((entry) => target.add(entry));
+	target.clear();
+	snapshot.forEach((entry) => {
+		target.add(entry);
+	});
 };
 
 const setupWhatsAppHarness = async ({
-  oneWay = 0b11,
-  inWhitelist = () => true,
-  sentAfterStart = () => true,
-  getMessageType = () => 'conversation',
-  formatJid = (jid) => jid,
+	oneWay = 0b11,
+	inWhitelist = () => true,
+	sentAfterStart = () => true,
+	getMessageType = () => "conversation",
+	formatJid = (jid) => jid,
 } = {}) => {
-  const originalLogger = state.logger;
-  const originalOneWay = state.settings.oneWay;
-  const originalMirrorWAStatuses = state.settings.MirrorWAStatuses;
-  const originalNewsletterMediaUrlFallback = state.settings.NewsletterMediaUrlFallback;
-  const originalLastMessages = state.lastMessages;
-  const originalStartTime = state.startTime;
-  const originalSentMessages = snapshotSet(state.sentMessages);
-  const originalSentReactions = snapshotSet(state.sentReactions);
-  const originalSentPins = snapshotSet(state.sentPins);
-  const originalChats = snapshotObject(state.chats);
-  const originalContacts = snapshotObject(state.contacts);
-  const originalDcClient = state.dcClient;
-  const originalWaClient = state.waClient;
-  const originalGetControlChannel = utils.discord.getControlChannel;
-  const originalWhatsappUtils = utils.whatsapp;
+	const originalLogger = state.logger;
+	const originalOneWay = state.settings.oneWay;
+	const originalMirrorWAStatuses = state.settings.MirrorWAStatuses;
+	const originalNewsletterMediaUrlFallback =
+		state.settings.NewsletterMediaUrlFallback;
+	const originalLastMessages = state.lastMessages;
+	const originalStartTime = state.startTime;
+	const originalSentMessages = snapshotSet(state.sentMessages);
+	const originalSentReactions = snapshotSet(state.sentReactions);
+	const originalSentPins = snapshotSet(state.sentPins);
+	const originalChats = snapshotObject(state.chats);
+	const originalContacts = snapshotObject(state.contacts);
+	const originalDcClient = state.dcClient;
+	const originalWaClient = state.waClient;
+	const originalGetControlChannel = utils.discord.getControlChannel;
+	const originalWhatsappUtils = utils.whatsapp;
 
-  try {
-    state.logger = { info() {}, error() {}, warn() {}, debug() {} };
-    state.settings.oneWay = oneWay;
-    state.settings.NewsletterMediaUrlFallback = false;
-    state.lastMessages = {};
-    state.startTime = 0;
-    state.sentMessages.clear();
-    state.sentReactions.clear();
-    state.sentPins.clear();
-    resetNewsletterBridgeState();
-    restoreObject(state.chats, {});
-    restoreObject(state.contacts, {});
+	try {
+		state.logger = { info() {}, error() {}, warn() {}, debug() {} };
+		state.settings.oneWay = oneWay;
+		state.settings.NewsletterMediaUrlFallback = false;
+		state.lastMessages = {};
+		state.startTime = 0;
+		state.sentMessages.clear();
+		state.sentReactions.clear();
+		state.sentPins.clear();
+		resetNewsletterBridgeState();
+		restoreObject(state.chats, {});
+		restoreObject(state.contacts, {});
 
-    const controlMessages = [];
-    const controlChannel = { send: async (msg) => { controlMessages.push(msg); } };
-    utils.discord.getControlChannel = async () => controlChannel;
+		const controlMessages = [];
+		const controlChannel = {
+			send: async (msg) => {
+				controlMessages.push(msg);
+			},
+		};
+		utils.discord.getControlChannel = async () => controlChannel;
 
-    utils.whatsapp = {
-      _profilePicsCache: {},
-      sendQR() {},
-      getId: (...args) => originalWhatsappUtils.getId(...args),
-      getMessageType: (...args) => getMessageType(...args),
-      inWhitelist: (...args) => inWhitelist(...args),
-      sentAfterStart: (...args) => sentAfterStart(...args),
-      isStatusBroadcast: (raw) => raw?.key?.remoteJid === 'status@broadcast',
-      getMessage: (raw) => ['conversation', { text: raw.message }],
-      getSenderName: async () => 'Tester',
-      getContent: async (message) => ({ content: message.text, discordMentions: [] }),
-      getQuote: async () => null,
-      getFile: async () => null,
-      getProfilePic: async () => null,
-      getChannelJid: async (raw) => raw.key.remoteJid,
-      isGroup: () => false,
-      isForwarded: () => false,
-      getTimestamp: () => Date.now(),
-      formatJid: (...args) => formatJid(...args),
-      migrateLegacyJid: () => {},
-      isLidJid: () => true,
-      toJid: (value) => value,
-      deleteSession: async () => {},
-      getSenderJid: async (raw) => raw.key.remoteJid,
-      getMentionedJids: (...args) => originalWhatsappUtils.getMentionedJids(...args),
-      convertDiscordFormatting: (text) => text,
-      createQuoteMessage: async () => null,
-      createDocumentContent: () => ({}),
-      jidToName: (jid) => jid,
-      applyDiscordMentionLinks: (...args) => originalWhatsappUtils.applyDiscordMentionLinks(...args),
-      preferMentionJidForChat: (...args) => originalWhatsappUtils.preferMentionJidForChat(...args),
-      updateContacts() {},
-      generateLinkPreview: async () => null,
-    };
+		utils.whatsapp = {
+			_profilePicsCache: {},
+			sendQR() {},
+			getId: (...args) => originalWhatsappUtils.getId(...args),
+			getMessageType: (...args) => getMessageType(...args),
+			inWhitelist: (...args) => inWhitelist(...args),
+			sentAfterStart: (...args) => sentAfterStart(...args),
+			isStatusBroadcast: (raw) => raw?.key?.remoteJid === "status@broadcast",
+			getMessage: (raw) => ["conversation", { text: raw.message }],
+			getSenderName: async () => "Tester",
+			getContent: async (message) => ({
+				content: message.text,
+				discordMentions: [],
+			}),
+			getQuote: async () => null,
+			getFile: async () => null,
+			getProfilePic: async () => null,
+			getChannelJid: async (raw) => raw.key.remoteJid,
+			isGroup: () => false,
+			isForwarded: () => false,
+			getTimestamp: () => Date.now(),
+			formatJid: (...args) => formatJid(...args),
+			migrateLegacyJid: () => {},
+			isLidJid: () => true,
+			toJid: (value) => value,
+			deleteSession: async () => {},
+			getSenderJid: async (raw) => raw.key.remoteJid,
+			getMentionedJids: (...args) =>
+				originalWhatsappUtils.getMentionedJids(...args),
+			convertDiscordFormatting: (text) => text,
+			createQuoteMessage: async () => null,
+			createDocumentContent: () => ({}),
+			jidToName: (jid) => jid,
+			applyDiscordMentionLinks: (...args) =>
+				originalWhatsappUtils.applyDiscordMentionLinks(...args),
+			preferMentionJidForChat: (...args) =>
+				originalWhatsappUtils.preferMentionJidForChat(...args),
+			updateContacts() {},
+			generateLinkPreview: async () => null,
+		};
 
-    const forwarded = {
-      messages: [],
-      reactions: [],
-      deletes: [],
-      pins: [],
-    };
-    state.dcClient = new EventEmitter();
-    state.dcClient.on('whatsappMessage', (payload) => forwarded.messages.push(payload));
-    state.dcClient.on('whatsappReaction', (payload) => forwarded.reactions.push(payload));
-    state.dcClient.on('whatsappDelete', (payload) => forwarded.deletes.push(payload));
-    state.dcClient.on('whatsappPin', (payload) => forwarded.pins.push(payload));
+		const forwarded = {
+			messages: [],
+			reactions: [],
+			deletes: [],
+			pins: [],
+		};
+		state.dcClient = new EventEmitter();
+		state.dcClient.on("whatsappMessage", (payload) =>
+			forwarded.messages.push(payload),
+		);
+		state.dcClient.on("whatsappReaction", (payload) =>
+			forwarded.reactions.push(payload),
+		);
+		state.dcClient.on("whatsappDelete", (payload) =>
+			forwarded.deletes.push(payload),
+		);
+		state.dcClient.on("whatsappPin", (payload) => forwarded.pins.push(payload));
 
-    class FakeWhatsAppClient {
-      constructor() {
-        this.ev = new EventEmitter();
-        this.sendCalls = [];
-        this.newsletterReactionCalls = [];
-        this._sendCounter = 0;
-        this.contacts = {};
-        this.signalRepository = {};
-        this.ws = new EventEmitter();
-      }
+		class FakeWhatsAppClient {
+			constructor() {
+				this.ev = new EventEmitter();
+				this.sendCalls = [];
+				this.newsletterReactionCalls = [];
+				this._sendCounter = 0;
+				this.contacts = {};
+				this.signalRepository = {};
+				this.ws = new EventEmitter();
+			}
 
-      async sendMessage(jid, content, options) {
-        this.sendCalls.push({ jid, content, options });
-        this._sendCounter += 1;
-        const key = { id: `sent-${this._sendCounter}`, remoteJid: jid };
-        if (typeof jid === 'string' && jid.endsWith('@newsletter')) {
-          key.server_id = `server-${this._sendCounter}`;
-        }
-        return { key };
-      }
+			async sendMessage(jid, content, options) {
+				this.sendCalls.push({ jid, content, options });
+				this._sendCounter += 1;
+				const key = { id: `sent-${this._sendCounter}`, remoteJid: jid };
+				if (typeof jid === "string" && jid.endsWith("@newsletter")) {
+					key.server_id = `server-${this._sendCounter}`;
+				}
+				return { key };
+			}
 
-      async newsletterReactMessage(jid, serverId, reaction) {
-        this.newsletterReactionCalls.push({ jid, serverId, reaction });
-      }
+			async newsletterReactMessage(jid, serverId, reaction) {
+				this.newsletterReactionCalls.push({ jid, serverId, reaction });
+			}
 
-      async groupFetchAllParticipating() {
-        return {};
-      }
+			async groupFetchAllParticipating() {
+				return {};
+			}
 
-      async profilePictureUrl() {
-        return null;
-      }
-    }
+			async profilePictureUrl() {
+				return null;
+			}
+		}
 
-    const fakeClient = new FakeWhatsAppClient();
-    setClientFactoryOverrides({
-      createWhatsAppClient: () => fakeClient,
-      getBaileysVersion: async () => ({ version: [1, 0, 0] }),
-    });
+		const fakeClient = new FakeWhatsAppClient();
+		setClientFactoryOverrides({
+			createWhatsAppClient: () => fakeClient,
+			getBaileysVersion: async () => ({ version: [1, 0, 0] }),
+		});
 
-    const { connectToWhatsApp } = await import('../src/whatsappHandler.js');
-    await connectToWhatsApp();
+		const { connectToWhatsApp } = await import("../src/whatsappHandler.js");
+		await connectToWhatsApp();
 
-    fakeClient.ev.emit('connection.update', { connection: 'open' });
+		fakeClient.ev.emit("connection.update", { connection: "open" });
 
-    const cleanup = () => {
-      state.logger = originalLogger;
-      state.settings.oneWay = originalOneWay;
-      state.settings.MirrorWAStatuses = originalMirrorWAStatuses;
-      state.settings.NewsletterMediaUrlFallback = originalNewsletterMediaUrlFallback;
-      state.lastMessages = originalLastMessages;
-      state.startTime = originalStartTime;
-      restoreSet(state.sentMessages, originalSentMessages);
-      restoreSet(state.sentReactions, originalSentReactions);
-      restoreSet(state.sentPins, originalSentPins);
-      resetNewsletterBridgeState();
-      restoreObject(state.chats, originalChats);
-      restoreObject(state.contacts, originalContacts);
-      state.dcClient = originalDcClient;
-      state.waClient = originalWaClient;
-      utils.discord.getControlChannel = originalGetControlChannel;
-      utils.whatsapp = originalWhatsappUtils;
-      resetClientFactoryOverrides();
-    };
+		const cleanup = () => {
+			state.logger = originalLogger;
+			state.settings.oneWay = originalOneWay;
+			state.settings.MirrorWAStatuses = originalMirrorWAStatuses;
+			state.settings.NewsletterMediaUrlFallback =
+				originalNewsletterMediaUrlFallback;
+			state.lastMessages = originalLastMessages;
+			state.startTime = originalStartTime;
+			restoreSet(state.sentMessages, originalSentMessages);
+			restoreSet(state.sentReactions, originalSentReactions);
+			restoreSet(state.sentPins, originalSentPins);
+			resetNewsletterBridgeState();
+			restoreObject(state.chats, originalChats);
+			restoreObject(state.contacts, originalContacts);
+			state.dcClient = originalDcClient;
+			state.waClient = originalWaClient;
+			utils.discord.getControlChannel = originalGetControlChannel;
+			utils.whatsapp = originalWhatsappUtils;
+			resetClientFactoryOverrides();
+		};
 
-    return {
-      fakeClient,
-      forwarded,
-      controlMessages,
-      cleanup,
-    };
-  } catch (err) {
-    state.logger = originalLogger;
-    state.settings.oneWay = originalOneWay;
-    state.settings.MirrorWAStatuses = originalMirrorWAStatuses;
-    state.settings.NewsletterMediaUrlFallback = originalNewsletterMediaUrlFallback;
-    state.lastMessages = originalLastMessages;
-    state.startTime = originalStartTime;
-    restoreSet(state.sentMessages, originalSentMessages);
-    restoreSet(state.sentReactions, originalSentReactions);
-    restoreSet(state.sentPins, originalSentPins);
-    resetNewsletterBridgeState();
-    restoreObject(state.chats, originalChats);
-    restoreObject(state.contacts, originalContacts);
-    state.dcClient = originalDcClient;
-    state.waClient = originalWaClient;
-    utils.discord.getControlChannel = originalGetControlChannel;
-    utils.whatsapp = originalWhatsappUtils;
-    resetClientFactoryOverrides();
-    throw err;
-  }
+		return {
+			fakeClient,
+			forwarded,
+			controlMessages,
+			cleanup,
+		};
+	} catch (err) {
+		state.logger = originalLogger;
+		state.settings.oneWay = originalOneWay;
+		state.settings.MirrorWAStatuses = originalMirrorWAStatuses;
+		state.settings.NewsletterMediaUrlFallback =
+			originalNewsletterMediaUrlFallback;
+		state.lastMessages = originalLastMessages;
+		state.startTime = originalStartTime;
+		restoreSet(state.sentMessages, originalSentMessages);
+		restoreSet(state.sentReactions, originalSentReactions);
+		restoreSet(state.sentPins, originalSentPins);
+		resetNewsletterBridgeState();
+		restoreObject(state.chats, originalChats);
+		restoreObject(state.contacts, originalContacts);
+		state.dcClient = originalDcClient;
+		state.waClient = originalWaClient;
+		utils.discord.getControlChannel = originalGetControlChannel;
+		utils.whatsapp = originalWhatsappUtils;
+		resetClientFactoryOverrides();
+		throw err;
+	}
 };
 
-test('WhatsApp message emits Discord event', async () => {
-  const harness = await setupWhatsAppHarness();
-  try {
-    harness.fakeClient.ev.emit('messages.upsert', {
-      type: 'notify',
-      messages: [{
-        key: { id: 'abc', remoteJid: 'jid@s.whatsapp.net' },
-        message: 'hello world',
-      }],
-    });
+test("WhatsApp message emits Discord event", async () => {
+	const harness = await setupWhatsAppHarness();
+	try {
+		harness.fakeClient.ev.emit("messages.upsert", {
+			type: "notify",
+			messages: [
+				{
+					key: { id: "abc", remoteJid: "jid@s.whatsapp.net" },
+					message: "hello world",
+				},
+			],
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(harness.forwarded.messages[0]?.id, 'abc');
-    assert.equal(harness.forwarded.messages[0]?.content, 'hello world');
-    assert.equal(harness.forwarded.messages[0]?.channelJid, 'jid@s.whatsapp.net');
-    assert.ok(harness.controlMessages.length >= 1);
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(harness.forwarded.messages[0]?.id, "abc");
+		assert.equal(harness.forwarded.messages[0]?.content, "hello world");
+		assert.equal(
+			harness.forwarded.messages[0]?.channelJid,
+			"jid@s.whatsapp.net",
+		);
+		assert.ok(harness.controlMessages.length >= 1);
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('WhatsApp whitelist gating prevents emitting Discord events', async () => {
-  const harness = await setupWhatsAppHarness({
-    inWhitelist: () => false,
-  });
-  try {
-    harness.fakeClient.ev.emit('messages.upsert', {
-      type: 'notify',
-      messages: [{
-        key: { id: 'blocked', remoteJid: 'jid@s.whatsapp.net' },
-        message: 'should not forward',
-      }],
-    });
-    await delay(0);
-    assert.equal(harness.forwarded.messages.length, 0);
-  } finally {
-    harness.cleanup();
-  }
+test("WhatsApp whitelist gating prevents emitting Discord events", async () => {
+	const harness = await setupWhatsAppHarness({
+		inWhitelist: () => false,
+	});
+	try {
+		harness.fakeClient.ev.emit("messages.upsert", {
+			type: "notify",
+			messages: [
+				{
+					key: { id: "blocked", remoteJid: "jid@s.whatsapp.net" },
+					message: "should not forward",
+				},
+			],
+		});
+		await delay(0);
+		assert.equal(harness.forwarded.messages.length, 0);
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('WhatsApp Status messages are skipped when status mirroring is disabled', async () => {
-  const harness = await setupWhatsAppHarness();
-  const originalMirrorWAStatuses = state.settings.MirrorWAStatuses;
-  try {
-    state.settings.MirrorWAStatuses = false;
-    harness.fakeClient.ev.emit('messages.upsert', {
-      type: 'notify',
-      messages: [{
-        key: { id: 'status-1', remoteJid: 'status@broadcast' },
-        message: 'status update',
-      }],
-    });
+test("WhatsApp Status messages are skipped when status mirroring is disabled", async () => {
+	const harness = await setupWhatsAppHarness();
+	const originalMirrorWAStatuses = state.settings.MirrorWAStatuses;
+	try {
+		state.settings.MirrorWAStatuses = false;
+		harness.fakeClient.ev.emit("messages.upsert", {
+			type: "notify",
+			messages: [
+				{
+					key: { id: "status-1", remoteJid: "status@broadcast" },
+					message: "status update",
+				},
+			],
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(harness.forwarded.messages.length, 0);
-  } finally {
-    state.settings.MirrorWAStatuses = originalMirrorWAStatuses;
-    harness.cleanup();
-  }
+		assert.equal(harness.forwarded.messages.length, 0);
+	} finally {
+		state.settings.MirrorWAStatuses = originalMirrorWAStatuses;
+		harness.cleanup();
+	}
 });
 
-test('WhatsApp sentMessages prevents echoing messages back to Discord', async () => {
-  const harness = await setupWhatsAppHarness();
-  try {
-    state.sentMessages.add('echo-id');
-    harness.fakeClient.ev.emit('messages.upsert', {
-      type: 'notify',
-      messages: [{
-        key: { id: 'echo-id', remoteJid: 'jid@s.whatsapp.net' },
-        message: 'echo loop',
-      }],
-    });
-    await delay(0);
-    assert.equal(harness.forwarded.messages.length, 0);
-    assert.equal(state.sentMessages.has('echo-id'), false);
-  } finally {
-    harness.cleanup();
-  }
+test("WhatsApp sentMessages prevents echoing messages back to Discord", async () => {
+	const harness = await setupWhatsAppHarness();
+	try {
+		state.sentMessages.add("echo-id");
+		harness.fakeClient.ev.emit("messages.upsert", {
+			type: "notify",
+			messages: [
+				{
+					key: { id: "echo-id", remoteJid: "jid@s.whatsapp.net" },
+					message: "echo loop",
+				},
+			],
+		});
+		await delay(0);
+		assert.equal(harness.forwarded.messages.length, 0);
+		assert.equal(state.sentMessages.has("echo-id"), false);
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('WhatsApp sentReactions prevents echoing reactions back to Discord', async () => {
-  const harness = await setupWhatsAppHarness();
-  try {
-    state.sentReactions.add('react-id');
-    harness.fakeClient.ev.emit('messages.reaction', [{
-      key: { id: 'react-id', remoteJid: 'jid@s.whatsapp.net', fromMe: false },
-      reaction: { text: '👍' },
-    }]);
-    await delay(0);
-    assert.equal(harness.forwarded.reactions.length, 0);
-    assert.equal(state.sentReactions.has('react-id'), false);
-  } finally {
-    harness.cleanup();
-  }
+test("WhatsApp sentReactions prevents echoing reactions back to Discord", async () => {
+	const harness = await setupWhatsAppHarness();
+	try {
+		state.sentReactions.add("react-id");
+		harness.fakeClient.ev.emit("messages.reaction", [
+			{
+				key: { id: "react-id", remoteJid: "jid@s.whatsapp.net", fromMe: false },
+				reaction: { text: "👍" },
+			},
+		]);
+		await delay(0);
+		assert.equal(harness.forwarded.reactions.length, 0);
+		assert.equal(state.sentReactions.has("react-id"), false);
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('WhatsApp newsletter upserts prefer server_id as bridged message id', async () => {
-  const harness = await setupWhatsAppHarness();
-  try {
-    harness.fakeClient.ev.emit('messages.upsert', {
-      type: 'notify',
-      messages: [{
-        key: {
-          id: 'newsletter-client-id',
-          server_id: 'newsletter-server-id',
-          remoteJid: '120363123456789@newsletter',
-        },
-        message: 'newsletter post',
-      }],
-    });
+test("WhatsApp newsletter upserts prefer server_id as bridged message id", async () => {
+	const harness = await setupWhatsAppHarness();
+	try {
+		harness.fakeClient.ev.emit("messages.upsert", {
+			type: "notify",
+			messages: [
+				{
+					key: {
+						id: "newsletter-client-id",
+						server_id: "newsletter-server-id",
+						remoteJid: "120363123456789@newsletter",
+					},
+					message: "newsletter post",
+				},
+			],
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(harness.forwarded.messages.length, 1);
-    assert.equal(harness.forwarded.messages[0]?.id, 'newsletter-server-id');
-    assert.equal(harness.forwarded.messages[0]?.channelJid, '120363123456789@newsletter');
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(harness.forwarded.messages.length, 1);
+		assert.equal(harness.forwarded.messages[0]?.id, "newsletter-server-id");
+		assert.equal(
+			harness.forwarded.messages[0]?.channelJid,
+			"120363123456789@newsletter",
+		);
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('WhatsApp newsletter reactions are mirrored through newsletter.reaction events', async () => {
-  const harness = await setupWhatsAppHarness();
-  try {
-    harness.fakeClient.ev.emit('newsletter.reaction', {
-      id: '120363123456789@newsletter',
-      server_id: 'newsletter-server-id',
-      reaction: {
-        code: '🔥',
-        count: 1,
-      },
-    });
+test("WhatsApp newsletter reactions are mirrored through newsletter.reaction events", async () => {
+	const harness = await setupWhatsAppHarness();
+	try {
+		harness.fakeClient.ev.emit("newsletter.reaction", {
+			id: "120363123456789@newsletter",
+			server_id: "newsletter-server-id",
+			reaction: {
+				code: "🔥",
+				count: 1,
+			},
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(harness.forwarded.reactions.length, 1);
-    assert.equal(harness.forwarded.reactions[0]?.id, 'newsletter-server-id');
-    assert.equal(harness.forwarded.reactions[0]?.jid, '120363123456789@newsletter');
-    assert.equal(harness.forwarded.reactions[0]?.text, '🔥');
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(harness.forwarded.reactions.length, 1);
+		assert.equal(harness.forwarded.reactions[0]?.id, "newsletter-server-id");
+		assert.equal(
+			harness.forwarded.reactions[0]?.jid,
+			"120363123456789@newsletter",
+		);
+		assert.equal(harness.forwarded.reactions[0]?.text, "🔥");
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('WhatsApp newsletter reaction echo suppression uses server_id', async () => {
-  const harness = await setupWhatsAppHarness();
-  try {
-    state.sentReactions.add('newsletter-server-id');
+test("WhatsApp newsletter reaction echo suppression uses server_id", async () => {
+	const harness = await setupWhatsAppHarness();
+	try {
+		state.sentReactions.add("newsletter-server-id");
 
-    harness.fakeClient.ev.emit('newsletter.reaction', {
-      id: '120363123456789@newsletter',
-      server_id: 'newsletter-server-id',
-      reaction: {
-        code: '🔥',
-        count: 1,
-      },
-    });
+		harness.fakeClient.ev.emit("newsletter.reaction", {
+			id: "120363123456789@newsletter",
+			server_id: "newsletter-server-id",
+			reaction: {
+				code: "🔥",
+				count: 1,
+			},
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(harness.forwarded.reactions.length, 0);
-    assert.equal(state.sentReactions.has('newsletter-server-id'), false);
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(harness.forwarded.reactions.length, 0);
+		assert.equal(state.sentReactions.has("newsletter-server-id"), false);
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('WhatsApp sentPins prevents echoing pins back to Discord', async () => {
-  const harness = await setupWhatsAppHarness();
-  try {
-    state.sentPins.add('pinned-id');
-    harness.fakeClient.ev.emit('messages.upsert', {
-      type: 'notify',
-      messages: [{
-        key: { id: 'pin-notice', remoteJid: 'jid@s.whatsapp.net' },
-        message: {
-          pinInChatMessage: {
-            key: { id: 'pinned-id', remoteJid: 'jid@s.whatsapp.net' },
-            type: 1,
-          },
-        },
-      }],
-    });
-    await delay(0);
-    assert.equal(harness.forwarded.pins.length, 0);
-    assert.equal(state.sentPins.has('pinned-id'), false);
+test("WhatsApp sentPins prevents echoing pins back to Discord", async () => {
+	const harness = await setupWhatsAppHarness();
+	try {
+		state.sentPins.add("pinned-id");
+		harness.fakeClient.ev.emit("messages.upsert", {
+			type: "notify",
+			messages: [
+				{
+					key: { id: "pin-notice", remoteJid: "jid@s.whatsapp.net" },
+					message: {
+						pinInChatMessage: {
+							key: { id: "pinned-id", remoteJid: "jid@s.whatsapp.net" },
+							type: 1,
+						},
+					},
+				},
+			],
+		});
+		await delay(0);
+		assert.equal(harness.forwarded.pins.length, 0);
+		assert.equal(state.sentPins.has("pinned-id"), false);
 
-    const deleteCalls = harness.fakeClient.sendCalls.filter((call) => call.content?.delete);
-    assert.equal(deleteCalls.length, 1);
-    assert.equal(deleteCalls[0].content.delete.id, 'pin-notice');
-  } finally {
-    harness.cleanup();
-  }
+		const deleteCalls = harness.fakeClient.sendCalls.filter(
+			(call) => call.content?.delete,
+		);
+		assert.equal(deleteCalls.length, 1);
+		assert.equal(deleteCalls[0].content.delete.id, "pin-notice");
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Discord delete/edit/reaction events send the expected WhatsApp actions', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  try {
-    state.lastMessages['dc-msg'] = 'wa-msg';
+test("Discord delete/edit/reaction events send the expected WhatsApp actions", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		state.lastMessages["dc-msg"] = "wa-msg";
 
-    harness.fakeClient.ev.emit('discordDelete', { jid: 'jid@s.whatsapp.net', id: 'wa-msg' });
-    await delay(0);
-    assert.equal(harness.fakeClient.sendCalls[0].content.delete.id, 'wa-msg');
+		harness.fakeClient.ev.emit("discordDelete", {
+			jid: "jid@s.whatsapp.net",
+			id: "wa-msg",
+		});
+		await delay(0);
+		assert.equal(harness.fakeClient.sendCalls[0].content.delete.id, "wa-msg");
 
-    harness.fakeClient.sendCalls.length = 0;
+		harness.fakeClient.sendCalls.length = 0;
 
-    harness.fakeClient.ev.emit('discordEdit', {
-      jid: 'jid@s.whatsapp.net',
-      message: {
-        id: 'dc-msg',
-        cleanContent: 'edited',
-        content: 'edited',
-        webhookId: null,
-        author: { username: 'You' },
-        channel: { send: async () => {} },
-      },
-    });
-    await delay(0);
-    assert.equal(harness.fakeClient.sendCalls[0].content.edit.id, 'wa-msg');
+		harness.fakeClient.ev.emit("discordEdit", {
+			jid: "jid@s.whatsapp.net",
+			message: {
+				id: "dc-msg",
+				cleanContent: "edited",
+				content: "edited",
+				webhookId: null,
+				author: { username: "You" },
+				channel: { send: async () => {} },
+			},
+		});
+		await delay(0);
+		assert.equal(harness.fakeClient.sendCalls[0].content.edit.id, "wa-msg");
 
-    harness.fakeClient.sendCalls.length = 0;
-    state.lastMessages['dc-react'] = 'wa-react-target';
-    harness.fakeClient.ev.emit('discordReaction', {
-      jid: 'jid@s.whatsapp.net',
-      removed: false,
-      reaction: {
-        emoji: { name: '🔥' },
-        message: {
-          id: 'dc-react',
-          webhookId: null,
-          author: { username: 'You' },
-        },
-      },
-    });
-    await delay(0);
-    assert.equal(harness.fakeClient.sendCalls[0].content.react.key.id, 'wa-react-target');
-    assert.equal(state.sentReactions.has('wa-react-target'), true);
-  } finally {
-    harness.cleanup();
-  }
+		harness.fakeClient.sendCalls.length = 0;
+		state.lastMessages["dc-react"] = "wa-react-target";
+		harness.fakeClient.ev.emit("discordReaction", {
+			jid: "jid@s.whatsapp.net",
+			removed: false,
+			reaction: {
+				emoji: { name: "🔥" },
+				message: {
+					id: "dc-react",
+					webhookId: null,
+					author: { username: "You" },
+				},
+			},
+		});
+		await delay(0);
+		assert.equal(
+			harness.fakeClient.sendCalls[0].content.react.key.id,
+			"wa-react-target",
+		);
+		assert.equal(state.sentReactions.has("wa-react-target"), true);
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Discord reactions in newsletter chats use newsletter-specific API', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  try {
-    state.lastMessages['dc-news-react'] = 'newsletter-server-id-1';
+test("Discord reactions in newsletter chats use newsletter-specific API", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		state.lastMessages["dc-news-react"] = "newsletter-server-id-1";
 
-    harness.fakeClient.ev.emit('discordReaction', {
-      jid: '1203630@newsletter',
-      removed: false,
-      reaction: {
-        emoji: { name: '🔥' },
-        message: {
-          id: 'dc-news-react',
-          webhookId: null,
-          author: { username: 'You' },
-        },
-      },
-    });
+		harness.fakeClient.ev.emit("discordReaction", {
+			jid: "1203630@newsletter",
+			removed: false,
+			reaction: {
+				emoji: { name: "🔥" },
+				message: {
+					id: "dc-news-react",
+					webhookId: null,
+					author: { username: "You" },
+				},
+			},
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(harness.fakeClient.newsletterReactionCalls.length, 1);
-    assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.jid, '1203630@newsletter');
-    assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.serverId, 'newsletter-server-id-1');
-    assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.reaction, '🔥');
-    assert.equal(harness.fakeClient.sendCalls.length, 0);
-    assert.equal(state.sentReactions.has('newsletter-server-id-1'), true);
+		assert.equal(harness.fakeClient.newsletterReactionCalls.length, 1);
+		assert.equal(
+			harness.fakeClient.newsletterReactionCalls[0]?.jid,
+			"1203630@newsletter",
+		);
+		assert.equal(
+			harness.fakeClient.newsletterReactionCalls[0]?.serverId,
+			"newsletter-server-id-1",
+		);
+		assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.reaction, "🔥");
+		assert.equal(harness.fakeClient.sendCalls.length, 0);
+		assert.equal(state.sentReactions.has("newsletter-server-id-1"), true);
 
-    harness.fakeClient.ev.emit('discordReaction', {
-      jid: '1203630@newsletter',
-      removed: true,
-      reaction: {
-        emoji: { name: '🔥' },
-        message: {
-          id: 'dc-news-react',
-          webhookId: null,
-          author: { username: 'You' },
-        },
-      },
-    });
+		harness.fakeClient.ev.emit("discordReaction", {
+			jid: "1203630@newsletter",
+			removed: true,
+			reaction: {
+				emoji: { name: "🔥" },
+				message: {
+					id: "dc-news-react",
+					webhookId: null,
+					author: { username: "You" },
+				},
+			},
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(harness.fakeClient.newsletterReactionCalls.length, 2);
-    assert.equal(harness.fakeClient.newsletterReactionCalls[1]?.reaction, undefined);
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(harness.fakeClient.newsletterReactionCalls.length, 2);
+		assert.equal(
+			harness.fakeClient.newsletterReactionCalls[1]?.reaction,
+			undefined,
+		);
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Discord newsletter deletes notify manual action and skip WhatsApp delete', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  const originalGetChannel = utils.discord.getChannel;
-  try {
-    const linkedNotices = [];
-    state.chats['1203630@newsletter'] = { channelId: 'chan-newsletter-1' };
-    utils.discord.getChannel = async (channelId) => (
-      channelId === 'chan-newsletter-1'
-        ? { send: async (value) => { linkedNotices.push(value); } }
-        : null
-    );
+test("Discord newsletter deletes notify manual action and skip WhatsApp delete", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	const originalGetChannel = utils.discord.getChannel;
+	try {
+		const linkedNotices = [];
+		state.chats["1203630@newsletter"] = { channelId: "chan-newsletter-1" };
+		utils.discord.getChannel = async (channelId) =>
+			channelId === "chan-newsletter-1"
+				? {
+						send: async (value) => {
+							linkedNotices.push(value);
+						},
+					}
+				: null;
 
-    harness.fakeClient.ev.emit('discordDelete', {
-      jid: '1203630@newsletter',
-      id: '  newsletter-server-id-1  ',
-    });
+		harness.fakeClient.ev.emit("discordDelete", {
+			jid: "1203630@newsletter",
+			id: "  newsletter-server-id-1  ",
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 0);
-    assert.equal(linkedNotices.length, 1);
-    assert.match(linkedNotices[0], /Please delete the message directly in WhatsApp on your phone/i);
-  } finally {
-    utils.discord.getChannel = originalGetChannel;
-    harness.cleanup();
-  }
+		assert.equal(harness.fakeClient.sendCalls.length, 0);
+		assert.equal(linkedNotices.length, 1);
+		assert.match(
+			linkedNotices[0],
+			/Please delete the message directly in WhatsApp on your phone/i,
+		);
+	} finally {
+		utils.discord.getChannel = originalGetChannel;
+		harness.cleanup();
+	}
 });
 
-test('Newsletter edit/delete notify manual action while reactions still wait for server ids', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  const originalGetChannel = utils.discord.getChannel;
-  try {
-    const editNotices = [];
-    const linkedNotices = [];
-    state.chats['1203630@newsletter'] = { channelId: 'chan-newsletter-2' };
-    utils.discord.getChannel = async (channelId) => (
-      channelId === 'chan-newsletter-2'
-        ? { send: async (value) => { linkedNotices.push(value); } }
-        : null
-    );
+test("Newsletter edit/delete notify manual action while reactions still wait for server ids", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	const originalGetChannel = utils.discord.getChannel;
+	try {
+		const editNotices = [];
+		const linkedNotices = [];
+		state.chats["1203630@newsletter"] = { channelId: "chan-newsletter-2" };
+		utils.discord.getChannel = async (channelId) =>
+			channelId === "chan-newsletter-2"
+				? {
+						send: async (value) => {
+							linkedNotices.push(value);
+						},
+					}
+				: null;
 
-    setTimeout(() => {
-      state.lastMessages['server-react-1'] = 'dc-news-react-wait';
-      state.lastMessages['dc-news-react-wait'] = 'server-react-1';
-    }, 120);
+		setTimeout(() => {
+			state.lastMessages["server-react-1"] = "dc-news-react-wait";
+			state.lastMessages["dc-news-react-wait"] = "server-react-1";
+		}, 120);
 
-    harness.fakeClient.ev.emit('discordEdit', {
-      jid: '1203630@newsletter',
-      message: {
-        id: 'dc-news-edit-wait',
-        cleanContent: 'edited',
-        content: 'edited',
-        webhookId: null,
-        author: { username: 'You' },
-        channel: { send: async (value) => { editNotices.push(value); } },
-      },
-    });
+		harness.fakeClient.ev.emit("discordEdit", {
+			jid: "1203630@newsletter",
+			message: {
+				id: "dc-news-edit-wait",
+				cleanContent: "edited",
+				content: "edited",
+				webhookId: null,
+				author: { username: "You" },
+				channel: {
+					send: async (value) => {
+						editNotices.push(value);
+					},
+				},
+			},
+		});
 
-    harness.fakeClient.ev.emit('discordReaction', {
-      jid: '1203630@newsletter',
-      removed: false,
-      reaction: {
-        emoji: { name: '🔥' },
-        message: {
-          id: 'dc-news-react-wait',
-          webhookId: null,
-          author: { username: 'You' },
-          channel: { send: async () => {} },
-        },
-      },
-    });
+		harness.fakeClient.ev.emit("discordReaction", {
+			jid: "1203630@newsletter",
+			removed: false,
+			reaction: {
+				emoji: { name: "🔥" },
+				message: {
+					id: "dc-news-react-wait",
+					webhookId: null,
+					author: { username: "You" },
+					channel: { send: async () => {} },
+				},
+			},
+		});
 
-    harness.fakeClient.ev.emit('discordDelete', {
-      jid: '1203630@newsletter',
-      id: null,
-      discordMessageId: 'dc-news-delete-wait',
-    });
+		harness.fakeClient.ev.emit("discordDelete", {
+			jid: "1203630@newsletter",
+			id: null,
+			discordMessageId: "dc-news-delete-wait",
+		});
 
-    await delay(450);
+		await delay(450);
 
-    assert.equal(editNotices.length, 1);
-    assert.match(editNotices[0], /Please edit the message directly in WhatsApp on your phone/i);
-    assert.equal(linkedNotices.length, 1);
-    assert.match(linkedNotices[0], /Please delete the message directly in WhatsApp on your phone/i);
-    const newsletterEditOrDeleteCalls = harness.fakeClient.sendCalls.filter(
-      (call) => call.content?.edit || call.content?.delete,
-    );
-    assert.equal(newsletterEditOrDeleteCalls.length, 0);
+		assert.equal(editNotices.length, 1);
+		assert.match(
+			editNotices[0],
+			/Please edit the message directly in WhatsApp on your phone/i,
+		);
+		assert.equal(linkedNotices.length, 1);
+		assert.match(
+			linkedNotices[0],
+			/Please delete the message directly in WhatsApp on your phone/i,
+		);
+		const newsletterEditOrDeleteCalls = harness.fakeClient.sendCalls.filter(
+			(call) => call.content?.edit || call.content?.delete,
+		);
+		assert.equal(newsletterEditOrDeleteCalls.length, 0);
 
-    assert.equal(harness.fakeClient.newsletterReactionCalls.length, 1);
-    assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.serverId, 'server-react-1');
-  } finally {
-    utils.discord.getChannel = originalGetChannel;
-    harness.cleanup();
-  }
+		assert.equal(harness.fakeClient.newsletterReactionCalls.length, 1);
+		assert.equal(
+			harness.fakeClient.newsletterReactionCalls[0]?.serverId,
+			"server-react-1",
+		);
+	} finally {
+		utils.discord.getChannel = originalGetChannel;
+		harness.cleanup();
+	}
 });
 
-test('Newsletter reactions wait past outbound client ids for resolved server ids', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  try {
-    state.lastMessages['dc-news-react-outbound'] = '3EB0DD14CD06ABCE146147';
-    state.lastMessages['3EB0DD14CD06ABCE146147'] = 'dc-news-react-outbound';
+test("Newsletter reactions wait past outbound client ids for resolved server ids", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		state.lastMessages["dc-news-react-outbound"] = "3EB0DD14CD06ABCE146147";
+		state.lastMessages["3EB0DD14CD06ABCE146147"] = "dc-news-react-outbound";
 
-    setTimeout(() => {
-      state.lastMessages['server-react-outbound-1'] = 'dc-news-react-outbound';
-      state.lastMessages['dc-news-react-outbound'] = 'server-react-outbound-1';
-    }, 120);
+		setTimeout(() => {
+			state.lastMessages["server-react-outbound-1"] = "dc-news-react-outbound";
+			state.lastMessages["dc-news-react-outbound"] = "server-react-outbound-1";
+		}, 120);
 
-    harness.fakeClient.ev.emit('discordReaction', {
-      jid: '1203630@newsletter',
-      removed: false,
-      reaction: {
-        emoji: { name: '🔥' },
-        message: {
-          id: 'dc-news-react-outbound',
-          webhookId: null,
-          author: { username: 'You' },
-          channel: { send: async () => {} },
-        },
-      },
-    });
+		harness.fakeClient.ev.emit("discordReaction", {
+			jid: "1203630@newsletter",
+			removed: false,
+			reaction: {
+				emoji: { name: "🔥" },
+				message: {
+					id: "dc-news-react-outbound",
+					webhookId: null,
+					author: { username: "You" },
+					channel: { send: async () => {} },
+				},
+			},
+		});
 
-    await delay(500);
+		await delay(500);
 
-    assert.equal(harness.fakeClient.newsletterReactionCalls.length, 1);
-    assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.serverId, 'server-react-outbound-1');
-    assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.reaction, '🔥');
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(harness.fakeClient.newsletterReactionCalls.length, 1);
+		assert.equal(
+			harness.fakeClient.newsletterReactionCalls[0]?.serverId,
+			"server-react-outbound-1",
+		);
+		assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.reaction, "🔥");
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Newsletter reactions recover server ids from stored outbound messages after restart', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  try {
-    messageStore.clear();
-    const outboundId = '3EB0DD14CD06ABCE146147';
-    harness.fakeClient.sendMessage = async (jid, content, options) => {
-      harness.fakeClient.sendCalls.push({ jid, content, options });
-      return {
-        key: {
-          id: outboundId,
-          remoteJid: jid,
-        },
-        message: {
-          conversation: content?.text || '',
-        },
-        messageTimestamp: Math.floor(Date.now() / 1000),
-      };
-    };
-    harness.fakeClient.newsletterFetchMessages = async () => [{
-      key: {
-        server_id: 'server-react-restart-1',
-        remoteJid: '1203630@newsletter',
-      },
-      message: {
-        conversation: 'newsletter restart map text',
-      },
-      messageTimestamp: Math.floor(Date.now() / 1000),
-    }];
+test("Newsletter reactions recover server ids from stored outbound messages after restart", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		messageStore.clear();
+		const outboundId = "3EB0DD14CD06ABCE146147";
+		harness.fakeClient.sendMessage = async (jid, content, options) => {
+			harness.fakeClient.sendCalls.push({ jid, content, options });
+			return {
+				key: {
+					id: outboundId,
+					remoteJid: jid,
+				},
+				message: {
+					conversation: content?.text || "",
+				},
+				messageTimestamp: Math.floor(Date.now() / 1000),
+			};
+		};
+		harness.fakeClient.newsletterFetchMessages = async () => [
+			{
+				key: {
+					server_id: "server-react-restart-1",
+					remoteJid: "1203630@newsletter",
+				},
+				message: {
+					conversation: "newsletter restart map text",
+				},
+				messageTimestamp: Math.floor(Date.now() / 1000),
+			},
+		];
 
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: '1203630@newsletter',
-      message: {
-        id: 'dc-news-react-restart',
-        content: 'newsletter restart map text',
-        cleanContent: 'newsletter restart map text',
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async () => {} },
-        attachments: new Map(),
-        stickers: new Map(),
-        embeds: [],
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-      },
-    });
-    await delay(0);
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "1203630@newsletter",
+			message: {
+				id: "dc-news-react-restart",
+				content: "newsletter restart map text",
+				cleanContent: "newsletter restart map text",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map(),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
+		await delay(0);
 
-    assert.equal(state.lastMessages['dc-news-react-restart'], outboundId);
-    assert.ok(messageStore.get({ remoteJid: '1203630@newsletter', id: outboundId }));
+		assert.equal(state.lastMessages["dc-news-react-restart"], outboundId);
+		assert.ok(
+			messageStore.get({ remoteJid: "1203630@newsletter", id: outboundId }),
+		);
 
-    // Simulate process restart: in-memory pending-send state is lost.
-    resetNewsletterBridgeState();
+		// Simulate process restart: in-memory pending-send state is lost.
+		resetNewsletterBridgeState();
 
-    harness.fakeClient.ev.emit('discordReaction', {
-      jid: '1203630@newsletter',
-      removed: false,
-      reaction: {
-        emoji: { name: '🔥' },
-        message: {
-          id: 'dc-news-react-restart',
-          webhookId: null,
-          author: { username: 'You' },
-          channel: { send: async () => {} },
-        },
-      },
-    });
-    await delay(500);
+		harness.fakeClient.ev.emit("discordReaction", {
+			jid: "1203630@newsletter",
+			removed: false,
+			reaction: {
+				emoji: { name: "🔥" },
+				message: {
+					id: "dc-news-react-restart",
+					webhookId: null,
+					author: { username: "You" },
+					channel: { send: async () => {} },
+				},
+			},
+		});
+		await delay(500);
 
-    assert.equal(harness.fakeClient.newsletterReactionCalls.length, 1);
-    assert.equal(harness.fakeClient.newsletterReactionCalls[0]?.serverId, 'server-react-restart-1');
-    assert.equal(state.lastMessages['dc-news-react-restart'], 'server-react-restart-1');
-    assert.equal(state.lastMessages['server-react-restart-1'], 'dc-news-react-restart');
-    assert.equal(state.lastMessages[outboundId], 'dc-news-react-restart');
-  } finally {
-    messageStore.clear();
-    harness.cleanup();
-  }
+		assert.equal(harness.fakeClient.newsletterReactionCalls.length, 1);
+		assert.equal(
+			harness.fakeClient.newsletterReactionCalls[0]?.serverId,
+			"server-react-restart-1",
+		);
+		assert.equal(
+			state.lastMessages["dc-news-react-restart"],
+			"server-react-restart-1",
+		);
+		assert.equal(
+			state.lastMessages["server-react-restart-1"],
+			"dc-news-react-restart",
+		);
+		assert.equal(state.lastMessages[outboundId], "dc-news-react-restart");
+	} finally {
+		messageStore.clear();
+		harness.cleanup();
+	}
 });
 
-test('Discord newsletter sends use normalized JIDs and map server IDs', async () => {
-  const harness = await setupWhatsAppHarness({
-    oneWay: 0b11,
-    formatJid: (jid) => (typeof jid === 'string' ? jid.trim() : jid),
-  });
-  try {
-    messageStore.clear();
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: '1203630@newsletter   ',
-      message: {
-        id: 'dc-news-send',
-        content: 'newsletter publish text',
-        cleanContent: 'newsletter publish text',
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async () => {} },
-        attachments: new Map(),
-        stickers: new Map(),
-        embeds: [],
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-      },
-    });
+test("Discord newsletter sends use normalized JIDs and map server IDs", async () => {
+	const harness = await setupWhatsAppHarness({
+		oneWay: 0b11,
+		formatJid: (jid) => (typeof jid === "string" ? jid.trim() : jid),
+	});
+	try {
+		messageStore.clear();
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "1203630@newsletter   ",
+			message: {
+				id: "dc-news-send",
+				content: "newsletter publish text",
+				cleanContent: "newsletter publish text",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map(),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 1);
-    assert.equal(harness.fakeClient.sendCalls[0]?.jid, '1203630@newsletter');
-    assert.equal(harness.fakeClient.sendCalls[0]?.options?.getUrlInfo, undefined);
-    assert.equal(state.lastMessages['dc-news-send'], 'server-1');
-    assert.equal(state.lastMessages['server-1'], 'dc-news-send');
-    assert.ok(messageStore.get({ remoteJid: '1203630@newsletter', id: 'sent-1' }));
-    assert.ok(messageStore.get({ remoteJid: '1203630@newsletter', id: 'server-1' }));
-  } finally {
-    messageStore.clear();
-    harness.cleanup();
-  }
+		assert.equal(harness.fakeClient.sendCalls.length, 1);
+		assert.equal(harness.fakeClient.sendCalls[0]?.jid, "1203630@newsletter");
+		assert.equal(
+			harness.fakeClient.sendCalls[0]?.options?.getUrlInfo,
+			undefined,
+		);
+		assert.equal(state.lastMessages["dc-news-send"], "server-1");
+		assert.equal(state.lastMessages["server-1"], "dc-news-send");
+		assert.ok(
+			messageStore.get({ remoteJid: "1203630@newsletter", id: "sent-1" }),
+		);
+		assert.ok(
+			messageStore.get({ remoteJid: "1203630@newsletter", id: "server-1" }),
+		);
+	} finally {
+		messageStore.clear();
+		harness.cleanup();
+	}
 });
 
-test('Discord newsletter send maps server ids from pending upsert notifications', async () => {
-  const harness = await setupWhatsAppHarness({
-    oneWay: 0b11,
-    formatJid: (jid) => (typeof jid === 'string' ? jid.trim() : jid),
-  });
-  try {
-    messageStore.clear();
-    let outboundCounter = 0;
-    harness.fakeClient.sendMessage = async (jid, content, options) => {
-      harness.fakeClient.sendCalls.push({ jid, content, options });
-      outboundCounter += 1;
-      return {
-        key: {
-          id: `3EB0PENDING${outboundCounter.toString().padStart(2, '0')}ABCD1234EF`,
-          remoteJid: jid,
-        },
-      };
-    };
+test("Discord newsletter send maps server ids from pending upsert notifications", async () => {
+	const harness = await setupWhatsAppHarness({
+		oneWay: 0b11,
+		formatJid: (jid) => (typeof jid === "string" ? jid.trim() : jid),
+	});
+	try {
+		messageStore.clear();
+		let outboundCounter = 0;
+		harness.fakeClient.sendMessage = async (jid, content, options) => {
+			harness.fakeClient.sendCalls.push({ jid, content, options });
+			outboundCounter += 1;
+			return {
+				key: {
+					id: `3EB0PENDING${outboundCounter.toString().padStart(2, "0")}ABCD1234EF`,
+					remoteJid: jid,
+				},
+			};
+		};
 
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: '1203630@newsletter',
-      message: {
-        id: 'dc-news-pending-map',
-        content: 'newsletter pending map text',
-        cleanContent: 'newsletter pending map text',
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async () => {} },
-        attachments: new Map(),
-        stickers: new Map(),
-        embeds: [],
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-      },
-    });
-    await delay(0);
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "1203630@newsletter",
+			message: {
+				id: "dc-news-pending-map",
+				content: "newsletter pending map text",
+				cleanContent: "newsletter pending map text",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map(),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
+		await delay(0);
 
-    const outboundId = state.lastMessages['dc-news-pending-map'];
-    assert.ok(outboundId?.startsWith('3EB0PENDING'));
+		const outboundId = state.lastMessages["dc-news-pending-map"];
+		assert.ok(outboundId?.startsWith("3EB0PENDING"));
 
-    harness.fakeClient.ev.emit('messages.upsert', {
-      type: 'notify',
-      messages: [{
-        key: {
-          id: '48902.1-1',
-          remoteJid: '1203630@newsletter',
-        },
-        message: {
-          conversation: 'newsletter pending map text',
-        },
-      }],
-    });
-    await delay(0);
+		harness.fakeClient.ev.emit("messages.upsert", {
+			type: "notify",
+			messages: [
+				{
+					key: {
+						id: "48902.1-1",
+						remoteJid: "1203630@newsletter",
+					},
+					message: {
+						conversation: "newsletter pending map text",
+					},
+				},
+			],
+		});
+		await delay(0);
 
-    assert.equal(harness.forwarded.messages.length, 0);
-    assert.equal(state.lastMessages['dc-news-pending-map'], '48902.1-1');
-    assert.equal(state.lastMessages['48902.1-1'], 'dc-news-pending-map');
-    assert.equal(state.lastMessages[outboundId], 'dc-news-pending-map');
-  } finally {
-    messageStore.clear();
-    harness.cleanup();
-  }
+		assert.equal(harness.forwarded.messages.length, 0);
+		assert.equal(state.lastMessages["dc-news-pending-map"], "48902.1-1");
+		assert.equal(state.lastMessages["48902.1-1"], "dc-news-pending-map");
+		assert.equal(state.lastMessages[outboundId], "dc-news-pending-map");
+	} finally {
+		messageStore.clear();
+		harness.cleanup();
+	}
 });
 
-test('Newsletter live_updates notifications map pending outbound ids to server ids', async () => {
-  const harness = await setupWhatsAppHarness({
-    oneWay: 0b11,
-    formatJid: (jid) => (typeof jid === 'string' ? jid.trim() : jid),
-  });
-  try {
-    messageStore.clear();
-    harness.fakeClient.sendMessage = async (jid, content, options) => {
-      harness.fakeClient.sendCalls.push({ jid, content, options });
-      return {
-        key: {
-          id: '3EB0LIVEUPDATEMAPABCDEF123456',
-          remoteJid: jid,
-        },
-      };
-    };
+test("Newsletter live_updates notifications map pending outbound ids to server ids", async () => {
+	const harness = await setupWhatsAppHarness({
+		oneWay: 0b11,
+		formatJid: (jid) => (typeof jid === "string" ? jid.trim() : jid),
+	});
+	try {
+		messageStore.clear();
+		harness.fakeClient.sendMessage = async (jid, content, options) => {
+			harness.fakeClient.sendCalls.push({ jid, content, options });
+			return {
+				key: {
+					id: "3EB0LIVEUPDATEMAPABCDEF123456",
+					remoteJid: jid,
+				},
+			};
+		};
 
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: '1203630@newsletter',
-      message: {
-        id: 'dc-news-live-map',
-        content: 'live update mapping text',
-        cleanContent: 'live update mapping text',
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async () => {} },
-        attachments: new Map(),
-        stickers: new Map(),
-        embeds: [],
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-      },
-    });
-    await delay(0);
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "1203630@newsletter",
+			message: {
+				id: "dc-news-live-map",
+				content: "live update mapping text",
+				cleanContent: "live update mapping text",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map(),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
+		await delay(0);
 
-    assert.equal(state.lastMessages['dc-news-live-map'], '3EB0LIVEUPDATEMAPABCDEF123456');
+		assert.equal(
+			state.lastMessages["dc-news-live-map"],
+			"3EB0LIVEUPDATEMAPABCDEF123456",
+		);
 
-    const nowTs = String(Math.floor(Date.now() / 1000));
-    harness.fakeClient.ws.emit('CB:notification,type:newsletter', {
-      tag: 'notification',
-      attrs: {
-        from: '1203630@newsletter',
-        type: 'newsletter',
-        id: 'test-live-updates',
-        t: nowTs,
-      },
-      content: [{
-        tag: 'live_updates',
-        attrs: {},
-        content: [{
-          tag: 'messages',
-          attrs: { t: nowTs },
-          content: [{
-            tag: 'message',
-            attrs: { server_id: '131' },
-          }],
-        }],
-      }],
-    });
-    await delay(0);
+		const nowTs = String(Math.floor(Date.now() / 1000));
+		harness.fakeClient.ws.emit("CB:notification,type:newsletter", {
+			tag: "notification",
+			attrs: {
+				from: "1203630@newsletter",
+				type: "newsletter",
+				id: "test-live-updates",
+				t: nowTs,
+			},
+			content: [
+				{
+					tag: "live_updates",
+					attrs: {},
+					content: [
+						{
+							tag: "messages",
+							attrs: { t: nowTs },
+							content: [
+								{
+									tag: "message",
+									attrs: { server_id: "131" },
+								},
+							],
+						},
+					],
+				},
+			],
+		});
+		await delay(0);
 
-    assert.equal(state.lastMessages['dc-news-live-map'], '131');
-    assert.equal(state.lastMessages['131'], 'dc-news-live-map');
-    assert.equal(state.lastMessages['3EB0LIVEUPDATEMAPABCDEF123456'], 'dc-news-live-map');
-  } finally {
-    messageStore.clear();
-    harness.cleanup();
-  }
+		assert.equal(state.lastMessages["dc-news-live-map"], "131");
+		assert.equal(state.lastMessages["131"], "dc-news-live-map");
+		assert.equal(
+			state.lastMessages["3EB0LIVEUPDATEMAPABCDEF123456"],
+			"dc-news-live-map",
+		);
+	} finally {
+		messageStore.clear();
+		harness.cleanup();
+	}
 });
 
-test('Newsletter live_updates notifications mirror reactions to Discord', async () => {
-  const harness = await setupWhatsAppHarness({
-    oneWay: 0b11,
-    formatJid: (jid) => (typeof jid === 'string' ? jid.trim() : jid),
-  });
-  try {
-    const nowTs = String(Math.floor(Date.now() / 1000));
-    harness.fakeClient.ws.emit('CB:notification,type:newsletter', {
-      tag: 'notification',
-      attrs: {
-        from: '1203630@newsletter',
-        type: 'newsletter',
-        id: 'test-live-updates-reaction',
-        t: nowTs,
-      },
-      content: [{
-        tag: 'live_updates',
-        attrs: {},
-        content: [{
-          tag: 'messages',
-          attrs: { t: nowTs },
-          content: [{
-            tag: 'message',
-            attrs: { server_id: '133' },
-            content: [{
-              tag: 'reactions',
-              attrs: {},
-              content: [{
-                tag: 'reaction',
-                attrs: { code: '👍', count: '1' },
-              }],
-            }],
-          }],
-        }],
-      }],
-    });
-    await delay(0);
+test("Newsletter live_updates notifications mirror reactions to Discord", async () => {
+	const harness = await setupWhatsAppHarness({
+		oneWay: 0b11,
+		formatJid: (jid) => (typeof jid === "string" ? jid.trim() : jid),
+	});
+	try {
+		const nowTs = String(Math.floor(Date.now() / 1000));
+		harness.fakeClient.ws.emit("CB:notification,type:newsletter", {
+			tag: "notification",
+			attrs: {
+				from: "1203630@newsletter",
+				type: "newsletter",
+				id: "test-live-updates-reaction",
+				t: nowTs,
+			},
+			content: [
+				{
+					tag: "live_updates",
+					attrs: {},
+					content: [
+						{
+							tag: "messages",
+							attrs: { t: nowTs },
+							content: [
+								{
+									tag: "message",
+									attrs: { server_id: "133" },
+									content: [
+										{
+											tag: "reactions",
+											attrs: {},
+											content: [
+												{
+													tag: "reaction",
+													attrs: { code: "👍", count: "1" },
+												},
+											],
+										},
+									],
+								},
+							],
+						},
+					],
+				},
+			],
+		});
+		await delay(0);
 
-    assert.equal(harness.forwarded.reactions.length, 1);
-    assert.equal(harness.forwarded.reactions[0]?.id, '133');
-    assert.equal(harness.forwarded.reactions[0]?.jid, '1203630@newsletter');
-    assert.equal(harness.forwarded.reactions[0]?.text, '👍');
-    assert.equal(harness.forwarded.reactions[0]?.author, 'newsletter:133:👍');
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(harness.forwarded.reactions.length, 1);
+		assert.equal(harness.forwarded.reactions[0]?.id, "133");
+		assert.equal(harness.forwarded.reactions[0]?.jid, "1203630@newsletter");
+		assert.equal(harness.forwarded.reactions[0]?.text, "👍");
+		assert.equal(harness.forwarded.reactions[0]?.author, "newsletter:133:👍");
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Newsletter live_updates reaction echo suppression uses server_id', async () => {
-  const harness = await setupWhatsAppHarness({
-    oneWay: 0b11,
-    formatJid: (jid) => (typeof jid === 'string' ? jid.trim() : jid),
-  });
-  try {
-    state.sentReactions.add('133');
-    const nowTs = String(Math.floor(Date.now() / 1000));
-    harness.fakeClient.ws.emit('CB:notification,type:newsletter', {
-      tag: 'notification',
-      attrs: {
-        from: '1203630@newsletter',
-        type: 'newsletter',
-        id: 'test-live-updates-reaction-echo',
-        t: nowTs,
-      },
-      content: [{
-        tag: 'live_updates',
-        attrs: {},
-        content: [{
-          tag: 'messages',
-          attrs: { t: nowTs },
-          content: [{
-            tag: 'message',
-            attrs: { server_id: '133' },
-            content: [{
-              tag: 'reactions',
-              attrs: {},
-              content: [{
-                tag: 'reaction',
-                attrs: { code: '👍', count: '1' },
-              }],
-            }],
-          }],
-        }],
-      }],
-    });
-    await delay(0);
+test("Newsletter live_updates reaction echo suppression uses server_id", async () => {
+	const harness = await setupWhatsAppHarness({
+		oneWay: 0b11,
+		formatJid: (jid) => (typeof jid === "string" ? jid.trim() : jid),
+	});
+	try {
+		state.sentReactions.add("133");
+		const nowTs = String(Math.floor(Date.now() / 1000));
+		harness.fakeClient.ws.emit("CB:notification,type:newsletter", {
+			tag: "notification",
+			attrs: {
+				from: "1203630@newsletter",
+				type: "newsletter",
+				id: "test-live-updates-reaction-echo",
+				t: nowTs,
+			},
+			content: [
+				{
+					tag: "live_updates",
+					attrs: {},
+					content: [
+						{
+							tag: "messages",
+							attrs: { t: nowTs },
+							content: [
+								{
+									tag: "message",
+									attrs: { server_id: "133" },
+									content: [
+										{
+											tag: "reactions",
+											attrs: {},
+											content: [
+												{
+													tag: "reaction",
+													attrs: { code: "👍", count: "1" },
+												},
+											],
+										},
+									],
+								},
+							],
+						},
+					],
+				},
+			],
+		});
+		await delay(0);
 
-    assert.equal(harness.forwarded.reactions.length, 0);
-    assert.equal(state.sentReactions.has('133'), false);
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(harness.forwarded.reactions.length, 0);
+		assert.equal(state.sentReactions.has("133"), false);
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Newsletter live_updates empty reactions clear tracked newsletter reactions', async () => {
-  const harness = await setupWhatsAppHarness({
-    oneWay: 0b11,
-    formatJid: (jid) => (typeof jid === 'string' ? jid.trim() : jid),
-  });
-  try {
-    const nowTs = String(Math.floor(Date.now() / 1000));
-    harness.fakeClient.ws.emit('CB:notification,type:newsletter', {
-      tag: 'notification',
-      attrs: {
-        from: '1203630@newsletter',
-        type: 'newsletter',
-        id: 'test-live-updates-reaction-clear',
-        t: nowTs,
-      },
-      content: [{
-        tag: 'live_updates',
-        attrs: {},
-        content: [{
-          tag: 'messages',
-          attrs: { t: nowTs },
-          content: [{
-            tag: 'message',
-            attrs: { server_id: '133' },
-            content: [{
-              tag: 'reactions',
-              attrs: {},
-            }],
-          }],
-        }],
-      }],
-    });
-    await delay(0);
+test("Newsletter live_updates empty reactions clear tracked newsletter reactions", async () => {
+	const harness = await setupWhatsAppHarness({
+		oneWay: 0b11,
+		formatJid: (jid) => (typeof jid === "string" ? jid.trim() : jid),
+	});
+	try {
+		const nowTs = String(Math.floor(Date.now() / 1000));
+		harness.fakeClient.ws.emit("CB:notification,type:newsletter", {
+			tag: "notification",
+			attrs: {
+				from: "1203630@newsletter",
+				type: "newsletter",
+				id: "test-live-updates-reaction-clear",
+				t: nowTs,
+			},
+			content: [
+				{
+					tag: "live_updates",
+					attrs: {},
+					content: [
+						{
+							tag: "messages",
+							attrs: { t: nowTs },
+							content: [
+								{
+									tag: "message",
+									attrs: { server_id: "133" },
+									content: [
+										{
+											tag: "reactions",
+											attrs: {},
+										},
+									],
+								},
+							],
+						},
+					],
+				},
+			],
+		});
+		await delay(0);
 
-    assert.equal(harness.forwarded.reactions.length, 1);
-    assert.equal(harness.forwarded.reactions[0]?.id, '133');
-    assert.equal(harness.forwarded.reactions[0]?.jid, '1203630@newsletter');
-    assert.equal(harness.forwarded.reactions[0]?.text, '');
-    assert.equal(harness.forwarded.reactions[0]?.author, 'newsletter:133');
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(harness.forwarded.reactions.length, 1);
+		assert.equal(harness.forwarded.reactions[0]?.id, "133");
+		assert.equal(harness.forwarded.reactions[0]?.jid, "1203630@newsletter");
+		assert.equal(harness.forwarded.reactions[0]?.text, "");
+		assert.equal(harness.forwarded.reactions[0]?.author, "newsletter:133");
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Discord to WhatsApp sends include broadcast mode for broadcast chats', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  try {
-    state.lastMessages['dc-broadcast-edit'] = 'wa-broadcast-msg';
-    state.lastMessages['dc-broadcast-react'] = 'wa-broadcast-msg';
+test("Discord to WhatsApp sends include broadcast mode for broadcast chats", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		state.lastMessages["dc-broadcast-edit"] = "wa-broadcast-msg";
+		state.lastMessages["dc-broadcast-react"] = "wa-broadcast-msg";
 
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: '12345678@broadcast',
-      message: {
-        id: 'dc-broadcast-message',
-        content: 'broadcast text',
-        cleanContent: 'broadcast text',
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async () => {} },
-        attachments: new Map(),
-        stickers: new Map(),
-        embeds: [],
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-      },
-    });
-    await delay(0);
-    assert.equal(harness.fakeClient.sendCalls[0]?.options?.broadcast, true);
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "12345678@broadcast",
+			message: {
+				id: "dc-broadcast-message",
+				content: "broadcast text",
+				cleanContent: "broadcast text",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map(),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
+		await delay(0);
+		assert.equal(harness.fakeClient.sendCalls[0]?.options?.broadcast, true);
 
-    harness.fakeClient.ev.emit('discordEdit', {
-      jid: '12345678@broadcast',
-      message: {
-        id: 'dc-broadcast-edit',
-        cleanContent: 'edited',
-        content: 'edited',
-        webhookId: null,
-        author: { username: 'You' },
-        channel: { send: async () => {} },
-      },
-    });
-    await delay(0);
-    assert.equal(harness.fakeClient.sendCalls[1]?.options?.broadcast, true);
+		harness.fakeClient.ev.emit("discordEdit", {
+			jid: "12345678@broadcast",
+			message: {
+				id: "dc-broadcast-edit",
+				cleanContent: "edited",
+				content: "edited",
+				webhookId: null,
+				author: { username: "You" },
+				channel: { send: async () => {} },
+			},
+		});
+		await delay(0);
+		assert.equal(harness.fakeClient.sendCalls[1]?.options?.broadcast, true);
 
-    harness.fakeClient.ev.emit('discordReaction', {
-      jid: '12345678@broadcast',
-      removed: false,
-      reaction: {
-        emoji: { name: '🔥' },
-        message: {
-          id: 'dc-broadcast-react',
-          webhookId: null,
-          author: { username: 'You' },
-        },
-      },
-    });
-    await delay(0);
-    assert.equal(harness.fakeClient.sendCalls[2]?.options?.broadcast, true);
+		harness.fakeClient.ev.emit("discordReaction", {
+			jid: "12345678@broadcast",
+			removed: false,
+			reaction: {
+				emoji: { name: "🔥" },
+				message: {
+					id: "dc-broadcast-react",
+					webhookId: null,
+					author: { username: "You" },
+				},
+			},
+		});
+		await delay(0);
+		assert.equal(harness.fakeClient.sendCalls[2]?.options?.broadcast, true);
 
-    harness.fakeClient.ev.emit('discordDelete', {
-      jid: '12345678@broadcast',
-      id: 'wa-broadcast-msg',
-    });
-    await delay(0);
-    assert.equal(harness.fakeClient.sendCalls[3]?.options?.broadcast, true);
-  } finally {
-    harness.cleanup();
-  }
+		harness.fakeClient.ev.emit("discordDelete", {
+			jid: "12345678@broadcast",
+			id: "wa-broadcast-msg",
+		});
+		await delay(0);
+		assert.equal(harness.fakeClient.sendCalls[3]?.options?.broadcast, true);
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Discord raw user and role mentions are converted before forwarding to WhatsApp', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  try {
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: 'jid@s.whatsapp.net',
-      message: {
-        id: 'dc-mention-msg',
-        content: 'Hi <@123456789012345678> and <@&987654321098765432>',
-        cleanContent: 'Hi @Panos and @Moderators',
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async () => {} },
-        attachments: new Map(),
-        stickers: new Map(),
-        embeds: [],
-        mentions: {
-          users: new Map([
-            ['123456789012345678', {
-              id: '123456789012345678',
-              username: 'panos-discord',
-              globalName: 'Panos',
-            }],
-          ]),
-          members: new Map([
-            ['123456789012345678', { displayName: 'Panos' }],
-          ]),
-          roles: new Map([
-            ['987654321098765432', { id: '987654321098765432', name: 'Moderators' }],
-          ]),
-        },
-      },
-    });
+test("Discord raw user and role mentions are converted before forwarding to WhatsApp", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "jid@s.whatsapp.net",
+			message: {
+				id: "dc-mention-msg",
+				content: "Hi <@123456789012345678> and <@&987654321098765432>",
+				cleanContent: "Hi @Panos and @Moderators",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map(),
+				stickers: new Map(),
+				embeds: [],
+				mentions: {
+					users: new Map([
+						[
+							"123456789012345678",
+							{
+								id: "123456789012345678",
+								username: "panos-discord",
+								globalName: "Panos",
+							},
+						],
+					]),
+					members: new Map([["123456789012345678", { displayName: "Panos" }]]),
+					roles: new Map([
+						[
+							"987654321098765432",
+							{ id: "987654321098765432", name: "Moderators" },
+						],
+					]),
+				},
+			},
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, 'Hi @Panos and @Moderators');
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(
+			harness.fakeClient.sendCalls[0]?.content?.text,
+			"Hi @Panos and @Moderators",
+		);
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Discord embeds are ignored when DiscordEmbedsToWhatsApp is disabled', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  const originalEmbedSetting = state.settings.DiscordEmbedsToWhatsApp;
-  try {
-    state.settings.DiscordEmbedsToWhatsApp = false;
+test("Discord embeds are ignored when DiscordEmbedsToWhatsApp is disabled", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	const originalEmbedSetting = state.settings.DiscordEmbedsToWhatsApp;
+	try {
+		state.settings.DiscordEmbedsToWhatsApp = false;
 
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: 'jid@s.whatsapp.net',
-      message: {
-        id: 'dc-embed-disabled',
-        content: 'base text',
-        cleanContent: 'base text',
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async () => {} },
-        attachments: new Map(),
-        stickers: new Map(),
-        embeds: [{
-          title: 'Embed Title',
-          description: 'Embed body',
-          url: 'https://example.com/embed',
-        }],
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-      },
-    });
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "jid@s.whatsapp.net",
+			message: {
+				id: "dc-embed-disabled",
+				content: "base text",
+				cleanContent: "base text",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map(),
+				stickers: new Map(),
+				embeds: [
+					{
+						title: "Embed Title",
+						description: "Embed body",
+						url: "https://example.com/embed",
+					},
+				],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 1);
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, 'base text');
-  } finally {
-    state.settings.DiscordEmbedsToWhatsApp = originalEmbedSetting;
-    harness.cleanup();
-  }
+		assert.equal(harness.fakeClient.sendCalls.length, 1);
+		assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, "base text");
+	} finally {
+		state.settings.DiscordEmbedsToWhatsApp = originalEmbedSetting;
+		harness.cleanup();
+	}
 });
 
-test('Discord embeds can be mirrored to WhatsApp with mention conversion', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  const originalEmbedSetting = state.settings.DiscordEmbedsToWhatsApp;
-  const originalMentionLinks = { ...(state.settings.WhatsAppDiscordMentionLinks || {}) };
-  const originalContacts = snapshotObject(state.contacts);
-  try {
-    state.settings.DiscordEmbedsToWhatsApp = true;
-    const linkedJid = '14155550123@s.whatsapp.net';
-    state.contacts[linkedJid] = 'Panos';
-    state.settings.WhatsAppDiscordMentionLinks = { [linkedJid]: '123456789012345678' };
+test("Discord embeds can be mirrored to WhatsApp with mention conversion", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	const originalEmbedSetting = state.settings.DiscordEmbedsToWhatsApp;
+	const originalMentionLinks = {
+		...(state.settings.WhatsAppDiscordMentionLinks || {}),
+	};
+	const originalContacts = snapshotObject(state.contacts);
+	try {
+		state.settings.DiscordEmbedsToWhatsApp = true;
+		const linkedJid = "14155550123@s.whatsapp.net";
+		state.contacts[linkedJid] = "Panos";
+		state.settings.WhatsAppDiscordMentionLinks = {
+			[linkedJid]: "123456789012345678",
+		};
 
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: 'jid@s.whatsapp.net',
-      message: {
-        id: 'dc-embed-enabled',
-        content: '',
-        cleanContent: '',
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async () => {} },
-        attachments: new Map(),
-        stickers: new Map(),
-        embeds: [{
-          title: 'Embed Title',
-          description: 'Hi <@123456789012345678> and <@&987654321098765432>',
-          fields: [{ name: 'Scope', value: '<@123456789012345678>' }],
-          url: 'https://example.com/embed',
-        }],
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-        client: {
-          users: {
-            fetch: async (id) => (id === '123456789012345678'
-              ? { id, username: 'panos-discord', globalName: 'Panos' }
-              : null),
-          },
-        },
-        guild: {
-          members: {
-            cache: new Map(),
-            fetch: async (id) => (id === '123456789012345678' ? { id, displayName: 'Panos' } : null),
-          },
-          roles: {
-            cache: new Map(),
-            fetch: async (id) => (id === '987654321098765432' ? { id, name: 'Moderators' } : null),
-          },
-        },
-      },
-    });
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "jid@s.whatsapp.net",
+			message: {
+				id: "dc-embed-enabled",
+				content: "",
+				cleanContent: "",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map(),
+				stickers: new Map(),
+				embeds: [
+					{
+						title: "Embed Title",
+						description: "Hi <@123456789012345678> and <@&987654321098765432>",
+						fields: [{ name: "Scope", value: "<@123456789012345678>" }],
+						url: "https://example.com/embed",
+					},
+				],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+				client: {
+					users: {
+						fetch: async (id) =>
+							id === "123456789012345678"
+								? { id, username: "panos-discord", globalName: "Panos" }
+								: null,
+					},
+				},
+				guild: {
+					members: {
+						cache: new Map(),
+						fetch: async (id) =>
+							id === "123456789012345678" ? { id, displayName: "Panos" } : null,
+					},
+					roles: {
+						cache: new Map(),
+						fetch: async (id) =>
+							id === "987654321098765432" ? { id, name: "Moderators" } : null,
+					},
+				},
+			},
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 1);
-    const mirrored = harness.fakeClient.sendCalls[0]?.content?.text || '';
-    assert.ok(mirrored.includes('Embed Title'));
-    assert.ok(mirrored.includes('Hi @14155550123 and @Moderators'));
-    assert.ok(mirrored.includes('Scope: @14155550123'));
-    assert.ok(mirrored.includes('https://example.com/embed'));
-    assert.deepEqual(harness.fakeClient.sendCalls[0]?.content?.mentions, [linkedJid]);
-  } finally {
-    state.settings.DiscordEmbedsToWhatsApp = originalEmbedSetting;
-    state.settings.WhatsAppDiscordMentionLinks = originalMentionLinks;
-    restoreObject(state.contacts, originalContacts);
-    harness.cleanup();
-  }
+		assert.equal(harness.fakeClient.sendCalls.length, 1);
+		const mirrored = harness.fakeClient.sendCalls[0]?.content?.text || "";
+		assert.ok(mirrored.includes("Embed Title"));
+		assert.ok(mirrored.includes("Hi @14155550123 and @Moderators"));
+		assert.ok(mirrored.includes("Scope: @14155550123"));
+		assert.ok(mirrored.includes("https://example.com/embed"));
+		assert.deepEqual(harness.fakeClient.sendCalls[0]?.content?.mentions, [
+			linkedJid,
+		]);
+	} finally {
+		state.settings.DiscordEmbedsToWhatsApp = originalEmbedSetting;
+		state.settings.WhatsAppDiscordMentionLinks = originalMentionLinks;
+		restoreObject(state.contacts, originalContacts);
+		harness.cleanup();
+	}
 });
 
-test('Discord embed images are not duplicated when CDN and proxy URLs point to the same media', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  const originalEmbedSetting = state.settings.DiscordEmbedsToWhatsApp;
-  try {
-    state.settings.DiscordEmbedsToWhatsApp = true;
-    utils.whatsapp.createDocumentContent = (attachment) => ({
-      document: { url: attachment.url },
-      fileName: attachment.name,
-      mimetype: attachment.contentType,
-    });
+test("Discord embed images are not duplicated when CDN and proxy URLs point to the same media", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	const originalEmbedSetting = state.settings.DiscordEmbedsToWhatsApp;
+	try {
+		state.settings.DiscordEmbedsToWhatsApp = true;
+		utils.whatsapp.createDocumentContent = (attachment) => ({
+			document: { url: attachment.url },
+			fileName: attachment.name,
+			mimetype: attachment.contentType,
+		});
 
-    const cdnUrl = 'https://cdn.discordapp.com/attachments/123/456/embed-image.png?ex=abc&is=def&hm=123';
-    const proxyUrl = 'https://media.discordapp.net/attachments/123/456/embed-image.png?width=1024&height=768';
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: 'jid@s.whatsapp.net',
-      message: {
-        id: 'dc-embed-image-dedupe',
-        content: '',
-        cleanContent: '',
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async () => {} },
-        attachments: new Map([
-          ['attachment-1', {
-            id: 'attachment-1',
-            url: cdnUrl,
-            name: 'upload.png',
-            contentType: 'image/png',
-          }],
-        ]),
-        stickers: new Map(),
-        embeds: [{
-          title: 'Embed Image',
-          image: {
-            url: cdnUrl,
-            proxy_url: proxyUrl,
-          },
-        }],
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-      },
-    });
+		const cdnUrl =
+			"https://cdn.discordapp.com/attachments/123/456/embed-image.png?ex=abc&is=def&hm=123";
+		const proxyUrl =
+			"https://media.discordapp.net/attachments/123/456/embed-image.png?width=1024&height=768";
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "jid@s.whatsapp.net",
+			message: {
+				id: "dc-embed-image-dedupe",
+				content: "",
+				cleanContent: "",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map([
+					[
+						"attachment-1",
+						{
+							id: "attachment-1",
+							url: cdnUrl,
+							name: "upload.png",
+							contentType: "image/png",
+						},
+					],
+				]),
+				stickers: new Map(),
+				embeds: [
+					{
+						title: "Embed Image",
+						image: {
+							url: cdnUrl,
+							proxy_url: proxyUrl,
+						},
+					},
+				],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 1);
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.document?.url, cdnUrl);
-  } finally {
-    state.settings.DiscordEmbedsToWhatsApp = originalEmbedSetting;
-    harness.cleanup();
-  }
+		assert.equal(harness.fakeClient.sendCalls.length, 1);
+		assert.equal(
+			harness.fakeClient.sendCalls[0]?.content?.document?.url,
+			cdnUrl,
+		);
+	} finally {
+		state.settings.DiscordEmbedsToWhatsApp = originalEmbedSetting;
+		harness.cleanup();
+	}
 });
 
-test('Discord replies warn with interpolated message storage size when quoted message is missing', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  const originalLimit = state.settings.lastMessageStorage;
-  try {
-    state.settings.lastMessageStorage = 321;
-    const channelWarnings = [];
-    let quoteAttempts = 0;
-    utils.whatsapp.createQuoteMessage = async (...args) => {
-      quoteAttempts += 1;
-      assert.equal(args[1], 'jid@s.whatsapp.net');
-      return null;
-    };
+test("Discord replies warn with interpolated message storage size when quoted message is missing", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	const originalLimit = state.settings.lastMessageStorage;
+	try {
+		state.settings.lastMessageStorage = 321;
+		const channelWarnings = [];
+		let quoteAttempts = 0;
+		utils.whatsapp.createQuoteMessage = async (...args) => {
+			quoteAttempts += 1;
+			assert.equal(args[1], "jid@s.whatsapp.net");
+			return null;
+		};
 
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: 'jid@s.whatsapp.net',
-      message: {
-        id: 'dc-reply-msg',
-        content: 'reply text',
-        cleanContent: 'reply text',
-        reference: { channelId: 'chan-1', messageId: 'msg-1' },
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async (value) => { channelWarnings.push(value); } },
-        attachments: new Map(),
-        stickers: new Map(),
-        embeds: [],
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-      },
-    });
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "jid@s.whatsapp.net",
+			message: {
+				id: "dc-reply-msg",
+				content: "reply text",
+				cleanContent: "reply text",
+				reference: { channelId: "chan-1", messageId: "msg-1" },
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: {
+					send: async (value) => {
+						channelWarnings.push(value);
+					},
+				},
+				attachments: new Map(),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(quoteAttempts, 1);
-    assert.equal(channelWarnings.length, 1);
-    assert.ok(channelWarnings[0].includes('321'));
-    assert.equal(channelWarnings[0].includes('${state.settings.lastMessageStorage}'), false);
-  } finally {
-    state.settings.lastMessageStorage = originalLimit;
-    harness.cleanup();
-  }
+		assert.equal(quoteAttempts, 1);
+		assert.equal(channelWarnings.length, 1);
+		assert.ok(channelWarnings[0].includes("321"));
+		const limitPlaceholder = "$" + "{state.settings.lastMessageStorage}";
+		assert.equal(channelWarnings[0].includes(limitPlaceholder), false);
+	} finally {
+		state.settings.lastMessageStorage = originalLimit;
+		harness.cleanup();
+	}
 });
 
-test('Discord non-reply references skip quote lookup and do not warn', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  try {
-    const channelWarnings = [];
-    let quoteAttempts = 0;
-    utils.whatsapp.createQuoteMessage = async () => {
-      quoteAttempts += 1;
-      return null;
-    };
+test("Discord non-reply references skip quote lookup and do not warn", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		const channelWarnings = [];
+		let quoteAttempts = 0;
+		utils.whatsapp.createQuoteMessage = async () => {
+			quoteAttempts += 1;
+			return null;
+		};
 
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: 'jid@s.whatsapp.net',
-      message: {
-        id: 'dc-followed-announcement',
-        type: 'DEFAULT',
-        content: 'announcement update',
-        cleanContent: 'announcement update',
-        reference: { channelId: 'source-channel', messageId: 'source-message', guildId: 'source-guild' },
-        webhookId: 'external-news-webhook',
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async (value) => { channelWarnings.push(value); } },
-        attachments: new Map(),
-        stickers: new Map(),
-        embeds: [],
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-      },
-    });
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "jid@s.whatsapp.net",
+			message: {
+				id: "dc-followed-announcement",
+				type: "DEFAULT",
+				content: "announcement update",
+				cleanContent: "announcement update",
+				reference: {
+					channelId: "source-channel",
+					messageId: "source-message",
+					guildId: "source-guild",
+				},
+				webhookId: "external-news-webhook",
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: {
+					send: async (value) => {
+						channelWarnings.push(value);
+					},
+				},
+				attachments: new Map(),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(quoteAttempts, 0);
-    assert.equal(channelWarnings.length, 0);
-    assert.equal(harness.fakeClient.sendCalls.length, 1);
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, 'announcement update');
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(quoteAttempts, 0);
+		assert.equal(channelWarnings.length, 0);
+		assert.equal(harness.fakeClient.sendCalls.length, 1);
+		assert.equal(
+			harness.fakeClient.sendCalls[0]?.content?.text,
+			"announcement update",
+		);
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Discord forwarded messages skip quote lookup and send plain forwarded text to WhatsApp', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  try {
-    const channelWarnings = [];
-    let quoteAttempts = 0;
-    utils.whatsapp.createQuoteMessage = async () => {
-      quoteAttempts += 1;
-      return null;
-    };
+test("Discord forwarded messages skip quote lookup and send plain forwarded text to WhatsApp", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		const channelWarnings = [];
+		let quoteAttempts = 0;
+		utils.whatsapp.createQuoteMessage = async () => {
+			quoteAttempts += 1;
+			return null;
+		};
 
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: 'jid@s.whatsapp.net',
-      forwardContext: { isForwarded: true, sourceChannelId: 'chan-a', sourceMessageId: 'm-1', sourceGuildId: 'guild-a' },
-      message: {
-        id: 'dc-forward-msg',
-        content: '',
-        cleanContent: '',
-        reference: { channelId: 'chan-a', messageId: 'm-1' },
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async (value) => { channelWarnings.push(value); } },
-        attachments: new Map(),
-        stickers: new Map(),
-        embeds: [],
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-      },
-    });
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "jid@s.whatsapp.net",
+			forwardContext: {
+				isForwarded: true,
+				sourceChannelId: "chan-a",
+				sourceMessageId: "m-1",
+				sourceGuildId: "guild-a",
+			},
+			message: {
+				id: "dc-forward-msg",
+				content: "",
+				cleanContent: "",
+				reference: { channelId: "chan-a", messageId: "m-1" },
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: {
+					send: async (value) => {
+						channelWarnings.push(value);
+					},
+				},
+				attachments: new Map(),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(quoteAttempts, 0);
-    assert.equal(channelWarnings.length, 0);
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, 'Forwarded');
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(quoteAttempts, 0);
+		assert.equal(channelWarnings.length, 0);
+		assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, "Forwarded");
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Discord forwarded snapshots mirror content and attachments to WhatsApp', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  try {
-    utils.whatsapp.createDocumentContent = (attachment) => ({
-      document: { url: attachment.url },
-      fileName: attachment.name,
-      mimetype: attachment.contentType,
-    });
+test("Discord forwarded snapshots mirror content and attachments to WhatsApp", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		utils.whatsapp.createDocumentContent = (attachment) => ({
+			document: { url: attachment.url },
+			fileName: attachment.name,
+			mimetype: attachment.contentType,
+		});
 
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: 'jid@s.whatsapp.net',
-      forwardContext: { isForwarded: true, sourceChannelId: 'chan-a', sourceMessageId: 'm-1', sourceGuildId: 'guild-a' },
-      message: {
-        id: 'dc-forward-snapshot',
-        content: '',
-        cleanContent: '',
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async () => {} },
-        attachments: new Map(),
-        stickers: new Map(),
-        embeds: [],
-        wa2dcForwardSnapshot: {
-          content: 'snapshot text',
-          attachments: [{
-            url: 'https://cdn.discordapp.com/attachments/file.png',
-            name: 'file.png',
-            contentType: 'image/png',
-          }],
-        },
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-      },
-    });
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "jid@s.whatsapp.net",
+			forwardContext: {
+				isForwarded: true,
+				sourceChannelId: "chan-a",
+				sourceMessageId: "m-1",
+				sourceGuildId: "guild-a",
+			},
+			message: {
+				id: "dc-forward-snapshot",
+				content: "",
+				cleanContent: "",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map(),
+				stickers: new Map(),
+				embeds: [],
+				wa2dcForwardSnapshot: {
+					content: "snapshot text",
+					attachments: [
+						{
+							url: "https://cdn.discordapp.com/attachments/file.png",
+							name: "file.png",
+							contentType: "image/png",
+						},
+					],
+				},
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 1);
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.document?.url, 'https://cdn.discordapp.com/attachments/file.png');
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.caption, 'Forwarded\nsnapshot text');
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(harness.fakeClient.sendCalls.length, 1);
+		assert.equal(
+			harness.fakeClient.sendCalls[0]?.content?.document?.url,
+			"https://cdn.discordapp.com/attachments/file.png",
+		);
+		assert.equal(
+			harness.fakeClient.sendCalls[0]?.content?.caption,
+			"Forwarded\nsnapshot text",
+		);
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Discord forwarded snapshot embeds can be mirrored to WhatsApp', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  const originalEmbedSetting = state.settings.DiscordEmbedsToWhatsApp;
-  try {
-    state.settings.DiscordEmbedsToWhatsApp = true;
-    utils.whatsapp.createDocumentContent = (attachment) => ({
-      document: { url: attachment.url },
-      fileName: attachment.name,
-      mimetype: attachment.contentType,
-    });
+test("Discord forwarded snapshot embeds can be mirrored to WhatsApp", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	const originalEmbedSetting = state.settings.DiscordEmbedsToWhatsApp;
+	try {
+		state.settings.DiscordEmbedsToWhatsApp = true;
+		utils.whatsapp.createDocumentContent = (attachment) => ({
+			document: { url: attachment.url },
+			fileName: attachment.name,
+			mimetype: attachment.contentType,
+		});
 
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: 'jid@s.whatsapp.net',
-      forwardContext: { isForwarded: true, sourceChannelId: 'chan-a', sourceMessageId: 'm-1', sourceGuildId: 'guild-a' },
-      message: {
-        id: 'dc-forward-snapshot-embed',
-        content: '',
-        cleanContent: '',
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async () => {} },
-        attachments: new Map(),
-        stickers: new Map(),
-        embeds: [],
-        wa2dcForwardSnapshot: {
-          content: '',
-          attachments: [],
-          embeds: [{
-            title: 'Snapshot Embed',
-            description: 'embed body',
-            url: 'https://example.com/embed',
-            image: {
-              url: 'https://cdn.discordapp.com/attachments/snapshot-embed.png',
-            },
-          }],
-        },
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-      },
-    });
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "jid@s.whatsapp.net",
+			forwardContext: {
+				isForwarded: true,
+				sourceChannelId: "chan-a",
+				sourceMessageId: "m-1",
+				sourceGuildId: "guild-a",
+			},
+			message: {
+				id: "dc-forward-snapshot-embed",
+				content: "",
+				cleanContent: "",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map(),
+				stickers: new Map(),
+				embeds: [],
+				wa2dcForwardSnapshot: {
+					content: "",
+					attachments: [],
+					embeds: [
+						{
+							title: "Snapshot Embed",
+							description: "embed body",
+							url: "https://example.com/embed",
+							image: {
+								url: "https://cdn.discordapp.com/attachments/snapshot-embed.png",
+							},
+						},
+					],
+				},
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 1);
-    const sent = harness.fakeClient.sendCalls[0]?.content || {};
-    assert.equal(sent.document?.url, 'https://cdn.discordapp.com/attachments/snapshot-embed.png');
-    assert.equal(sent.caption, 'Forwarded\nSnapshot Embed\nembed body\nhttps://example.com/embed');
-  } finally {
-    state.settings.DiscordEmbedsToWhatsApp = originalEmbedSetting;
-    harness.cleanup();
-  }
+		assert.equal(harness.fakeClient.sendCalls.length, 1);
+		const sent = harness.fakeClient.sendCalls[0]?.content || {};
+		assert.equal(
+			sent.document?.url,
+			"https://cdn.discordapp.com/attachments/snapshot-embed.png",
+		);
+		assert.equal(
+			sent.caption,
+			"Forwarded\nSnapshot Embed\nembed body\nhttps://example.com/embed",
+		);
+	} finally {
+		state.settings.DiscordEmbedsToWhatsApp = originalEmbedSetting;
+		harness.cleanup();
+	}
 });
 
-test('Discord forwarded snapshot embeds do not duplicate attachment media', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  const originalEmbedSetting = state.settings.DiscordEmbedsToWhatsApp;
-  try {
-    state.settings.DiscordEmbedsToWhatsApp = true;
-    utils.whatsapp.createDocumentContent = (attachment) => ({
-      document: { url: attachment.url },
-      fileName: attachment.name,
-      mimetype: attachment.contentType,
-    });
+test("Discord forwarded snapshot embeds do not duplicate attachment media", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	const originalEmbedSetting = state.settings.DiscordEmbedsToWhatsApp;
+	try {
+		state.settings.DiscordEmbedsToWhatsApp = true;
+		utils.whatsapp.createDocumentContent = (attachment) => ({
+			document: { url: attachment.url },
+			fileName: attachment.name,
+			mimetype: attachment.contentType,
+		});
 
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: 'jid@s.whatsapp.net',
-      forwardContext: { isForwarded: true, sourceChannelId: 'chan-a', sourceMessageId: 'm-1', sourceGuildId: 'guild-a' },
-      message: {
-        id: 'dc-forward-snapshot-embed-dedupe',
-        content: '',
-        cleanContent: '',
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async () => {} },
-        attachments: new Map(),
-        stickers: new Map(),
-        embeds: [],
-        wa2dcForwardSnapshot: {
-          content: '',
-          attachments: [{
-            url: 'https://cdn.discordapp.com/attachments/123/456/snapshot-embed.png?ex=abc&is=def&hm=123',
-            name: 'snapshot-embed.png',
-            contentType: 'image/png',
-          }],
-          embeds: [{
-            title: 'Snapshot Embed',
-            image: {
-              proxyURL: 'https://media.discordapp.net/attachments/123/456/snapshot-embed.png?width=1024&height=1024',
-            },
-          }],
-        },
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-      },
-    });
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "jid@s.whatsapp.net",
+			forwardContext: {
+				isForwarded: true,
+				sourceChannelId: "chan-a",
+				sourceMessageId: "m-1",
+				sourceGuildId: "guild-a",
+			},
+			message: {
+				id: "dc-forward-snapshot-embed-dedupe",
+				content: "",
+				cleanContent: "",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map(),
+				stickers: new Map(),
+				embeds: [],
+				wa2dcForwardSnapshot: {
+					content: "",
+					attachments: [
+						{
+							url: "https://cdn.discordapp.com/attachments/123/456/snapshot-embed.png?ex=abc&is=def&hm=123",
+							name: "snapshot-embed.png",
+							contentType: "image/png",
+						},
+					],
+					embeds: [
+						{
+							title: "Snapshot Embed",
+							image: {
+								proxyURL:
+									"https://media.discordapp.net/attachments/123/456/snapshot-embed.png?width=1024&height=1024",
+							},
+						},
+					],
+				},
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 1);
-    assert.ok(harness.fakeClient.sendCalls[0]?.content?.document?.url);
-  } finally {
-    state.settings.DiscordEmbedsToWhatsApp = originalEmbedSetting;
-    harness.cleanup();
-  }
+		assert.equal(harness.fakeClient.sendCalls.length, 1);
+		assert.ok(harness.fakeClient.sendCalls[0]?.content?.document?.url);
+	} finally {
+		state.settings.DiscordEmbedsToWhatsApp = originalEmbedSetting;
+		harness.cleanup();
+	}
 });
 
-test('Discord forwarded snapshots resolve user and role mentions from raw tokens', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  const originalMentionLinks = { ...(state.settings.WhatsAppDiscordMentionLinks || {}) };
-  const originalContacts = snapshotObject(state.contacts);
-  try {
-    const linkedJid = '14155550123@s.whatsapp.net';
-    state.contacts[linkedJid] = 'Panos';
-    state.settings.WhatsAppDiscordMentionLinks = { [linkedJid]: '123456789012345678' };
+test("Discord forwarded snapshots resolve user and role mentions from raw tokens", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	const originalMentionLinks = {
+		...(state.settings.WhatsAppDiscordMentionLinks || {}),
+	};
+	const originalContacts = snapshotObject(state.contacts);
+	try {
+		const linkedJid = "14155550123@s.whatsapp.net";
+		state.contacts[linkedJid] = "Panos";
+		state.settings.WhatsAppDiscordMentionLinks = {
+			[linkedJid]: "123456789012345678",
+		};
 
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: 'jid@s.whatsapp.net',
-      forwardContext: { isForwarded: true, sourceChannelId: 'chan-a', sourceMessageId: 'm-1', sourceGuildId: 'guild-a' },
-      message: {
-        id: 'dc-forward-mention-snapshot',
-        content: '',
-        cleanContent: '',
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async () => {} },
-        attachments: new Map(),
-        stickers: new Map(),
-        embeds: [],
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-        wa2dcForwardSnapshot: {
-          content: 'Hi <@123456789012345678> and <@&987654321098765432>',
-          attachments: [],
-        },
-        client: {
-          users: {
-            fetch: async (id) => (id === '123456789012345678'
-              ? { id, username: 'panos-discord', globalName: 'Panos' }
-              : null),
-          },
-        },
-        guild: {
-          members: {
-            cache: new Map(),
-            fetch: async (id) => (id === '123456789012345678' ? { id, displayName: 'Panos' } : null),
-          },
-          roles: {
-            cache: new Map(),
-            fetch: async (id) => (id === '987654321098765432' ? { id, name: 'Moderators' } : null),
-          },
-        },
-      },
-    });
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "jid@s.whatsapp.net",
+			forwardContext: {
+				isForwarded: true,
+				sourceChannelId: "chan-a",
+				sourceMessageId: "m-1",
+				sourceGuildId: "guild-a",
+			},
+			message: {
+				id: "dc-forward-mention-snapshot",
+				content: "",
+				cleanContent: "",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map(),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+				wa2dcForwardSnapshot: {
+					content: "Hi <@123456789012345678> and <@&987654321098765432>",
+					attachments: [],
+				},
+				client: {
+					users: {
+						fetch: async (id) =>
+							id === "123456789012345678"
+								? { id, username: "panos-discord", globalName: "Panos" }
+								: null,
+					},
+				},
+				guild: {
+					members: {
+						cache: new Map(),
+						fetch: async (id) =>
+							id === "123456789012345678" ? { id, displayName: "Panos" } : null,
+					},
+					roles: {
+						cache: new Map(),
+						fetch: async (id) =>
+							id === "987654321098765432" ? { id, name: "Moderators" } : null,
+					},
+				},
+			},
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 1);
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, 'Forwarded\nHi @14155550123 and @Moderators');
-    assert.deepEqual(harness.fakeClient.sendCalls[0]?.content?.mentions, [linkedJid]);
-  } finally {
-    state.settings.WhatsAppDiscordMentionLinks = originalMentionLinks;
-    restoreObject(state.contacts, originalContacts);
-    harness.cleanup();
-  }
+		assert.equal(harness.fakeClient.sendCalls.length, 1);
+		assert.equal(
+			harness.fakeClient.sendCalls[0]?.content?.text,
+			"Forwarded\nHi @14155550123 and @Moderators",
+		);
+		assert.deepEqual(harness.fakeClient.sendCalls[0]?.content?.mentions, [
+			linkedJid,
+		]);
+	} finally {
+		state.settings.WhatsAppDiscordMentionLinks = originalMentionLinks;
+		restoreObject(state.contacts, originalContacts);
+		harness.cleanup();
+	}
 });
 
-test('Discord replies to newsletter chats attempt WhatsApp quote lookup', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  try {
-    let quoteAttempts = 0;
-    utils.whatsapp.createQuoteMessage = async () => {
-      quoteAttempts += 1;
-      return { key: { id: 'wa-quote-1' } };
-    };
+test("Discord replies to newsletter chats attempt WhatsApp quote lookup", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		let quoteAttempts = 0;
+		utils.whatsapp.createQuoteMessage = async () => {
+			quoteAttempts += 1;
+			return { key: { id: "wa-quote-1" } };
+		};
 
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: '120363123456789@newsletter',
-      message: {
-        id: 'dc-newsletter-reply',
-        content: 'newsletter post',
-        cleanContent: 'newsletter post',
-        reference: { channelId: 'chan-1', messageId: 'msg-1' },
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async () => {} },
-        attachments: new Map(),
-        stickers: new Map(),
-        embeds: [],
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-      },
-    });
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "120363123456789@newsletter",
+			message: {
+				id: "dc-newsletter-reply",
+				content: "newsletter post",
+				cleanContent: "newsletter post",
+				reference: { channelId: "chan-1", messageId: "msg-1" },
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map(),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(quoteAttempts, 1);
-    assert.equal(harness.fakeClient.sendCalls.length, 1);
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, 'newsletter post');
-    assert.ok(harness.fakeClient.sendCalls[0]?.options?.quoted);
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(quoteAttempts, 1);
+		assert.equal(harness.fakeClient.sendCalls.length, 1);
+		assert.equal(
+			harness.fakeClient.sendCalls[0]?.content?.text,
+			"newsletter post",
+		);
+		assert.ok(harness.fakeClient.sendCalls[0]?.options?.quoted);
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Newsletter quoted sends do not perform ack retry fallback by default', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  try {
-    utils.whatsapp.createQuoteMessage = async () => ({ key: { id: 'wa-quote-ack-retry' } });
+test("Newsletter quoted sends do not perform ack retry fallback by default", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		utils.whatsapp.createQuoteMessage = async () => ({
+			key: { id: "wa-quote-ack-retry" },
+		});
 
-    harness.fakeClient.sendMessage = async (jid, content, options) => {
-      harness.fakeClient.sendCalls.push({ jid, content, options });
-      harness.fakeClient._sendCounter += 1;
-      const outboundId = `ack-quote-retry-${harness.fakeClient._sendCounter}`;
-      return { key: { id: outboundId, remoteJid: jid, server_id: `server-${harness.fakeClient._sendCounter}` } };
-    };
+		harness.fakeClient.sendMessage = async (jid, content, options) => {
+			harness.fakeClient.sendCalls.push({ jid, content, options });
+			harness.fakeClient._sendCounter += 1;
+			const outboundId = `ack-quote-retry-${harness.fakeClient._sendCounter}`;
+			return {
+				key: {
+					id: outboundId,
+					remoteJid: jid,
+					server_id: `server-${harness.fakeClient._sendCounter}`,
+				},
+			};
+		};
 
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: '120363123456789@newsletter',
-      message: {
-        id: 'dc-newsletter-ack-quote-retry',
-        content: 'newsletter post',
-        cleanContent: 'newsletter post',
-        reference: { channelId: 'chan-1', messageId: 'msg-1' },
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async () => {} },
-        attachments: new Map(),
-        stickers: new Map(),
-        embeds: [],
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-      },
-    });
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "120363123456789@newsletter",
+			message: {
+				id: "dc-newsletter-ack-quote-retry",
+				content: "newsletter post",
+				cleanContent: "newsletter post",
+				reference: { channelId: "chan-1", messageId: "msg-1" },
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map(),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 1);
-    assert.ok(harness.fakeClient.sendCalls[0]?.options?.quoted);
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(harness.fakeClient.sendCalls.length, 1);
+		assert.ok(harness.fakeClient.sendCalls[0]?.options?.quoted);
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Newsletter replies without quote mapping send without fallback reply-context text by default', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  try {
-    const notices = [];
-    utils.whatsapp.createQuoteMessage = async () => null;
+test("Newsletter replies without quote mapping send without fallback reply-context text by default", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		const notices = [];
+		utils.whatsapp.createQuoteMessage = async () => null;
 
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: '120363123456789@newsletter',
-      message: {
-        id: 'dc-newsletter-reply-fallback',
-        content: 'newsletter post',
-        cleanContent: 'newsletter post',
-        reference: { channelId: 'chan-1', messageId: 'msg-1' },
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async (value) => { notices.push(value); } },
-        attachments: new Map(),
-        stickers: new Map(),
-        embeds: [],
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-        client: {
-          channels: {
-            fetch: async () => ({
-              messages: {
-                fetch: async () => ({
-                  content: 'Original replied message body',
-                  cleanContent: 'Original replied message body',
-                  author: { username: 'ReplyUser' },
-                  member: { displayName: 'ReplyUser' },
-                  attachments: new Map(),
-                }),
-              },
-            }),
-          },
-        },
-      },
-    });
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "120363123456789@newsletter",
+			message: {
+				id: "dc-newsletter-reply-fallback",
+				content: "newsletter post",
+				cleanContent: "newsletter post",
+				reference: { channelId: "chan-1", messageId: "msg-1" },
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: {
+					send: async (value) => {
+						notices.push(value);
+					},
+				},
+				attachments: new Map(),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+				client: {
+					channels: {
+						fetch: async () => ({
+							messages: {
+								fetch: async () => ({
+									content: "Original replied message body",
+									cleanContent: "Original replied message body",
+									author: { username: "ReplyUser" },
+									member: { displayName: "ReplyUser" },
+									attachments: new Map(),
+								}),
+							},
+						}),
+					},
+				},
+			},
+		});
 
-    await delay(0);
+		await delay(0);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 1);
-    const sentText = harness.fakeClient.sendCalls[0]?.content?.text || '';
-    assert.equal(sentText, 'newsletter post');
-    assert.equal(notices.length, 1);
-    assert.ok(notices[0].includes("Couldn't find the message quoted."));
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(harness.fakeClient.sendCalls.length, 1);
+		const sentText = harness.fakeClient.sendCalls[0]?.content?.text || "";
+		assert.equal(sentText, "newsletter post");
+		assert.equal(notices.length, 1);
+		assert.ok(notices[0].includes("Couldn't find the message quoted."));
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Newsletter image attachments with fallback disabled are not sent to WhatsApp media', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  try {
-    const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==';
-    const attachmentUrl = `data:image/png;base64,${pngBase64}`;
+test("Newsletter image attachments with fallback disabled are not sent to WhatsApp media", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		const pngBase64 =
+			"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==";
+		const attachmentUrl = `data:image/png;base64,${pngBase64}`;
 
-    const notices = [];
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: '120363123456789@newsletter',
-      forwardContext: null,
-      message: {
-        id: 'dc-newsletter-infer-image',
-        content: '',
-        cleanContent: '',
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async (value) => { notices.push(value); } },
-        attachments: new Map([
-          ['attachment-1', {
-            id: 'attachment-1',
-            url: attachmentUrl,
-            name: 'photo.png',
-            contentType: 'image/png',
-          }],
-        ]),
-        stickers: new Map(),
-        embeds: [],
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-      },
-    });
+		const notices = [];
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "120363123456789@newsletter",
+			forwardContext: null,
+			message: {
+				id: "dc-newsletter-infer-image",
+				content: "",
+				cleanContent: "",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: {
+					send: async (value) => {
+						notices.push(value);
+					},
+				},
+				attachments: new Map([
+					[
+						"attachment-1",
+						{
+							id: "attachment-1",
+							url: attachmentUrl,
+							name: "photo.png",
+							contentType: "image/png",
+						},
+					],
+				]),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
 
-    await delay(200);
+		await delay(200);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 0);
-    assert.equal(notices.length, 1);
-    assert.ok(String(notices[0]).includes('fallback is disabled'));
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(harness.fakeClient.sendCalls.length, 0);
+		assert.equal(notices.length, 1);
+		assert.ok(String(notices[0]).includes("fallback is disabled"));
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Newsletter unsupported attachments are skipped with FAQ notice', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  try {
-    const notices = [];
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: '120363123456789@newsletter',
-      forwardContext: null,
-      message: {
-        id: 'dc-newsletter-infer-voice',
-        content: '',
-        cleanContent: '',
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async (value) => { notices.push(value); } },
-        attachments: new Map([
-          ['attachment-1', {
-            id: 'attachment-1',
-            url: 'https://cdn.discordapp.com/attachments/123/456/voice-message.ogg',
-            name: 'document.pdf',
-            contentType: 'application/pdf',
-          }],
-        ]),
-        stickers: new Map(),
-        embeds: [],
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-      },
-    });
+test("Newsletter unsupported attachments are skipped with FAQ notice", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		const notices = [];
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "120363123456789@newsletter",
+			forwardContext: null,
+			message: {
+				id: "dc-newsletter-infer-voice",
+				content: "",
+				cleanContent: "",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: {
+					send: async (value) => {
+						notices.push(value);
+					},
+				},
+				attachments: new Map([
+					[
+						"attachment-1",
+						{
+							id: "attachment-1",
+							url: "https://cdn.discordapp.com/attachments/123/456/voice-message.ogg",
+							name: "document.pdf",
+							contentType: "application/pdf",
+						},
+					],
+				]),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
 
-    await delay(80);
+		await delay(80);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 0);
-    assert.equal(notices.length, 1);
-    assert.ok(String(notices[0]).includes('allow only image/video'));
-    assert.ok(String(notices[0]).includes('https://faq.whatsapp.com/549900560675125'));
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(harness.fakeClient.sendCalls.length, 0);
+		assert.equal(notices.length, 1);
+		assert.ok(String(notices[0]).includes("allow only image/video"));
+		assert.ok(
+			String(notices[0]).includes("https://faq.whatsapp.com/549900560675125"),
+		);
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Newsletter URL fallback enabled sends image attachments as plain links', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  try {
-    state.settings.NewsletterMediaUrlFallback = true;
-    utils.whatsapp.createDocumentContent = (attachment) => ({
-      document: { url: attachment.url },
-      fileName: attachment.name,
-      mimetype: attachment.contentType,
-    });
+test("Newsletter URL fallback enabled sends image attachments as plain links", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		state.settings.NewsletterMediaUrlFallback = true;
+		utils.whatsapp.createDocumentContent = (attachment) => ({
+			document: { url: attachment.url },
+			fileName: attachment.name,
+			mimetype: attachment.contentType,
+		});
 
-    harness.fakeClient.sendMessage = async (jid, content, options) => {
-      harness.fakeClient.sendCalls.push({ jid, content, options });
-      harness.fakeClient._sendCounter += 1;
-      return { key: { id: `sent-${harness.fakeClient._sendCounter}`, remoteJid: jid } };
-    };
+		harness.fakeClient.sendMessage = async (jid, content, options) => {
+			harness.fakeClient.sendCalls.push({ jid, content, options });
+			harness.fakeClient._sendCounter += 1;
+			return {
+				key: { id: `sent-${harness.fakeClient._sendCounter}`, remoteJid: jid },
+			};
+		};
 
-    const notices = [];
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: '120363123456789@newsletter',
-      forwardContext: { isForwarded: true, sourceChannelId: 'chan-a', sourceMessageId: 'm-1', sourceGuildId: 'guild-a' },
-      message: {
-        id: 'dc-newsletter-attachment-fallback',
-        content: '',
-        cleanContent: '',
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async (value) => { notices.push(value); } },
-        attachments: new Map(),
-        stickers: new Map(),
-        embeds: [],
-        wa2dcForwardSnapshot: {
-          content: 'snapshot text',
-          attachments: [{
-            url: 'https://example.com/file.png',
-            name: 'file.png',
-            contentType: 'image/png',
-          }],
-        },
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-      },
-    });
+		const notices = [];
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "120363123456789@newsletter",
+			forwardContext: {
+				isForwarded: true,
+				sourceChannelId: "chan-a",
+				sourceMessageId: "m-1",
+				sourceGuildId: "guild-a",
+			},
+			message: {
+				id: "dc-newsletter-attachment-fallback",
+				content: "",
+				cleanContent: "",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: {
+					send: async (value) => {
+						notices.push(value);
+					},
+				},
+				attachments: new Map(),
+				stickers: new Map(),
+				embeds: [],
+				wa2dcForwardSnapshot: {
+					content: "snapshot text",
+					attachments: [
+						{
+							url: "https://example.com/file.png",
+							name: "file.png",
+							contentType: "image/png",
+						},
+					],
+				},
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
 
-    await delay(50);
+		await delay(50);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 1);
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, 'Forwarded\nsnapshot text https://example.com/file.png');
-    assert.equal(notices.length, 1);
-    assert.ok(String(notices[0]).includes('fallback is enabled'));
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(harness.fakeClient.sendCalls.length, 1);
+		assert.equal(
+			harness.fakeClient.sendCalls[0]?.content?.text,
+			"Forwarded\nsnapshot text https://example.com/file.png",
+		);
+		assert.equal(notices.length, 1);
+		assert.ok(String(notices[0]).includes("fallback is enabled"));
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Newsletter URL fallback disabled drops image attachments and posts a notice', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  try {
-    const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==';
-    const attachmentUrl = `data:image/png;base64,${pngBase64}`;
+test("Newsletter URL fallback disabled drops image attachments and posts a notice", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		const pngBase64 =
+			"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==";
+		const attachmentUrl = `data:image/png;base64,${pngBase64}`;
 
-    const notices = [];
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: '120363123456789@newsletter',
-      forwardContext: null,
-      message: {
-        id: 'dc-newsletter-attachment-ack-fallback',
-        content: '',
-        cleanContent: '',
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async (value) => { notices.push(value); } },
-        attachments: new Map([
-          ['attachment-1', {
-            id: 'attachment-1',
-            url: attachmentUrl,
-            name: 'newsletter-photo.png',
-            contentType: 'image/png',
-          }],
-        ]),
-        stickers: new Map(),
-        embeds: [],
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-      },
-    });
+		const notices = [];
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "120363123456789@newsletter",
+			forwardContext: null,
+			message: {
+				id: "dc-newsletter-attachment-ack-fallback",
+				content: "",
+				cleanContent: "",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: {
+					send: async (value) => {
+						notices.push(value);
+					},
+				},
+				attachments: new Map([
+					[
+						"attachment-1",
+						{
+							id: "attachment-1",
+							url: attachmentUrl,
+							name: "newsletter-photo.png",
+							contentType: "image/png",
+						},
+					],
+				]),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
 
-    await delay(200);
+		await delay(200);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 0);
-    assert.equal(notices.length, 1);
-    assert.ok(String(notices[0]).includes('fallback is disabled'));
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(harness.fakeClient.sendCalls.length, 0);
+		assert.equal(notices.length, 1);
+		assert.ok(String(notices[0]).includes("fallback is disabled"));
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Newsletter URL fallback enabled never sends WhatsApp media payloads', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  try {
-    state.settings.NewsletterMediaUrlFallback = true;
-    const notices = [];
+test("Newsletter URL fallback enabled never sends WhatsApp media payloads", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		state.settings.NewsletterMediaUrlFallback = true;
+		const notices = [];
 
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: '120363123456789@newsletter',
-      forwardContext: null,
-      message: {
-        id: 'dc-newsletter-url-fallback-no-media',
-        content: 'caption text',
-        cleanContent: 'caption text',
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async (value) => { notices.push(value); } },
-        attachments: new Map([
-          ['attachment-1', {
-            id: 'attachment-1',
-            url: 'https://example.com/newsletter-photo.png',
-            name: 'newsletter-photo.png',
-            contentType: 'image/png',
-          }],
-        ]),
-        stickers: new Map(),
-        embeds: [],
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-      },
-    });
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "120363123456789@newsletter",
+			forwardContext: null,
+			message: {
+				id: "dc-newsletter-url-fallback-no-media",
+				content: "caption text",
+				cleanContent: "caption text",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: {
+					send: async (value) => {
+						notices.push(value);
+					},
+				},
+				attachments: new Map([
+					[
+						"attachment-1",
+						{
+							id: "attachment-1",
+							url: "https://example.com/newsletter-photo.png",
+							name: "newsletter-photo.png",
+							contentType: "image/png",
+						},
+					],
+				]),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
 
-    await delay(200);
+		await delay(200);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 1);
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, 'caption text https://example.com/newsletter-photo.png');
-    assert.equal(Boolean(harness.fakeClient.sendCalls[0]?.content?.image), false);
-    assert.equal(Boolean(harness.fakeClient.sendCalls[0]?.content?.video), false);
-    assert.equal(Boolean(harness.fakeClient.sendCalls[0]?.content?.document), false);
-    assert.equal(notices.length, 1);
-    assert.ok(String(notices[0]).includes('fallback is enabled'));
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(harness.fakeClient.sendCalls.length, 1);
+		assert.equal(
+			harness.fakeClient.sendCalls[0]?.content?.text,
+			"caption text https://example.com/newsletter-photo.png",
+		);
+		assert.equal(
+			Boolean(harness.fakeClient.sendCalls[0]?.content?.image),
+			false,
+		);
+		assert.equal(
+			Boolean(harness.fakeClient.sendCalls[0]?.content?.video),
+			false,
+		);
+		assert.equal(
+			Boolean(harness.fakeClient.sendCalls[0]?.content?.document),
+			false,
+		);
+		assert.equal(notices.length, 1);
+		assert.ok(String(notices[0]).includes("fallback is enabled"));
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Newsletter URL fallback enabled keeps only image/video links and notifies for unsupported files', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  try {
-    state.settings.NewsletterMediaUrlFallback = true;
-    const notices = [];
+test("Newsletter URL fallback enabled keeps only image/video links and notifies for unsupported files", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		state.settings.NewsletterMediaUrlFallback = true;
+		const notices = [];
 
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: '120363123456789@newsletter',
-      forwardContext: null,
-      message: {
-        id: 'dc-newsletter-url-fallback-mixed',
-        content: '',
-        cleanContent: '',
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async (value) => { notices.push(value); } },
-        attachments: new Map([
-          ['attachment-1', {
-            id: 'attachment-1',
-            url: 'https://example.com/newsletter-photo.jpg',
-            name: 'newsletter-photo.jpg',
-            contentType: 'image/jpeg',
-          }],
-          ['attachment-2', {
-            id: 'attachment-2',
-            url: 'https://example.com/newsletter-doc.pdf',
-            name: 'newsletter-doc.pdf',
-            contentType: 'application/pdf',
-          }],
-        ]),
-        stickers: new Map(),
-        embeds: [],
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-      },
-    });
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "120363123456789@newsletter",
+			forwardContext: null,
+			message: {
+				id: "dc-newsletter-url-fallback-mixed",
+				content: "",
+				cleanContent: "",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: {
+					send: async (value) => {
+						notices.push(value);
+					},
+				},
+				attachments: new Map([
+					[
+						"attachment-1",
+						{
+							id: "attachment-1",
+							url: "https://example.com/newsletter-photo.jpg",
+							name: "newsletter-photo.jpg",
+							contentType: "image/jpeg",
+						},
+					],
+					[
+						"attachment-2",
+						{
+							id: "attachment-2",
+							url: "https://example.com/newsletter-doc.pdf",
+							name: "newsletter-doc.pdf",
+							contentType: "application/pdf",
+						},
+					],
+				]),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
 
-    await delay(200);
+		await delay(200);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 1);
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, 'https://example.com/newsletter-photo.jpg');
-    assert.equal(Boolean(harness.fakeClient.sendCalls[0]?.content?.image), false);
-    assert.equal(Boolean(harness.fakeClient.sendCalls[0]?.content?.video), false);
-    assert.equal(Boolean(harness.fakeClient.sendCalls[0]?.content?.document), false);
-    assert.equal(notices.length, 2);
-    assert.ok(notices.some((value) => String(value).includes('allow only image/video')));
-    assert.ok(notices.some((value) => String(value).includes('https://faq.whatsapp.com/549900560675125')));
-    assert.ok(notices.some((value) => String(value).includes('fallback is enabled')));
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(harness.fakeClient.sendCalls.length, 1);
+		assert.equal(
+			harness.fakeClient.sendCalls[0]?.content?.text,
+			"https://example.com/newsletter-photo.jpg",
+		);
+		assert.equal(
+			Boolean(harness.fakeClient.sendCalls[0]?.content?.image),
+			false,
+		);
+		assert.equal(
+			Boolean(harness.fakeClient.sendCalls[0]?.content?.video),
+			false,
+		);
+		assert.equal(
+			Boolean(harness.fakeClient.sendCalls[0]?.content?.document),
+			false,
+		);
+		assert.equal(notices.length, 2);
+		assert.ok(
+			notices.some((value) => String(value).includes("allow only image/video")),
+		);
+		assert.ok(
+			notices.some((value) =>
+				String(value).includes("https://faq.whatsapp.com/549900560675125"),
+			),
+		);
+		assert.ok(
+			notices.some((value) => String(value).includes("fallback is enabled")),
+		);
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Newsletter URL fallback disabled keeps text and drops attachment links', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
-  try {
-    const notices = [];
+test("Newsletter URL fallback disabled keeps text and drops attachment links", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		const notices = [];
 
-    harness.fakeClient.ev.emit('discordMessage', {
-      jid: '120363123456789@newsletter',
-      forwardContext: null,
-      message: {
-        id: 'dc-newsletter-disabled-text-only',
-        content: 'message body',
-        cleanContent: 'message body',
-        webhookId: null,
-        author: { username: 'BridgeUser' },
-        member: { displayName: 'BridgeUser' },
-        channel: { send: async (value) => { notices.push(value); } },
-        attachments: new Map([
-          ['attachment-1', {
-            id: 'attachment-1',
-            url: 'https://example.com/newsletter-photo.png',
-            name: 'newsletter-photo.png',
-            contentType: 'image/png',
-          }],
-        ]),
-        stickers: new Map(),
-        embeds: [],
-        mentions: { users: new Map(), members: new Map(), roles: new Map() },
-      },
-    });
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "120363123456789@newsletter",
+			forwardContext: null,
+			message: {
+				id: "dc-newsletter-disabled-text-only",
+				content: "message body",
+				cleanContent: "message body",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: {
+					send: async (value) => {
+						notices.push(value);
+					},
+				},
+				attachments: new Map([
+					[
+						"attachment-1",
+						{
+							id: "attachment-1",
+							url: "https://example.com/newsletter-photo.png",
+							name: "newsletter-photo.png",
+							contentType: "image/png",
+						},
+					],
+				]),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
 
-    await delay(80);
+		await delay(80);
 
-    assert.equal(harness.fakeClient.sendCalls.length, 1);
-    assert.equal(harness.fakeClient.sendCalls[0]?.content?.text, 'message body');
-    assert.equal(notices.length, 1);
-    assert.ok(String(notices[0]).includes('fallback is disabled'));
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(harness.fakeClient.sendCalls.length, 1);
+		assert.equal(
+			harness.fakeClient.sendCalls[0]?.content?.text,
+			"message body",
+		);
+		assert.equal(notices.length, 1);
+		assert.ok(String(notices[0]).includes("fallback is disabled"));
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Newsletter send wrapper rewrites image upload paths from /o1/ to /m1/', async () => {
-  const harness = await setupWhatsAppHarness();
-  try {
-    harness.fakeClient.waUploadToServer = async () => ({
-      mediaUrl: 'https://mmg.whatsapp.net/o1/v/t24/f2/m123/example',
-      directPath: '/o1/v/t24/f2/m123/example',
-    });
+test("Newsletter send wrapper rewrites image upload paths from /o1/ to /m1/", async () => {
+	const harness = await setupWhatsAppHarness();
+	try {
+		harness.fakeClient.waUploadToServer = async () => ({
+			mediaUrl: "https://mmg.whatsapp.net/o1/v/t24/f2/m123/example",
+			directPath: "/o1/v/t24/f2/m123/example",
+		});
 
-    await harness.fakeClient.sendMessage('120363123456789@newsletter', { text: 'hello' });
+		await harness.fakeClient.sendMessage("120363123456789@newsletter", {
+			text: "hello",
+		});
 
-    const lastSend = harness.fakeClient.sendCalls[harness.fakeClient.sendCalls.length - 1];
-    assert.equal(typeof lastSend?.options?.upload, 'function');
+		const lastSend =
+			harness.fakeClient.sendCalls[harness.fakeClient.sendCalls.length - 1];
+		assert.equal(typeof lastSend?.options?.upload, "function");
 
-    const rewritten = await lastSend.options.upload('/tmp/mock-file', { mediaType: 'image' });
-    assert.equal(rewritten?.directPath, '/m1/v/t24/f2/m123/example');
-    assert.equal(rewritten?.mediaUrl, 'https://mmg.whatsapp.net/m1/v/t24/f2/m123/example');
-  } finally {
-    harness.cleanup();
-  }
+		const rewritten = await lastSend.options.upload("/tmp/mock-file", {
+			mediaType: "image",
+		});
+		assert.equal(rewritten?.directPath, "/m1/v/t24/f2/m123/example");
+		assert.equal(
+			rewritten?.mediaUrl,
+			"https://mmg.whatsapp.net/m1/v/t24/f2/m123/example",
+		);
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('Ack-rejected newsletter fromMe upserts are not mirrored back to Discord', async () => {
-  const harness = await setupWhatsAppHarness();
-  try {
-    harness.fakeClient.ev.emit('messages.update', [{
-      key: {
-        id: 'newsletter-ack-rejected-1',
-        remoteJid: '120363123456789@newsletter',
-        fromMe: true,
-      },
-      update: {
-        status: WAMessageStatus.ERROR,
-        messageStubParameters: ['479'],
-      },
-    }]);
-    await delay(0);
+test("Ack-rejected newsletter fromMe upserts are not mirrored back to Discord", async () => {
+	const harness = await setupWhatsAppHarness();
+	try {
+		harness.fakeClient.ev.emit("messages.update", [
+			{
+				key: {
+					id: "newsletter-ack-rejected-1",
+					remoteJid: "120363123456789@newsletter",
+					fromMe: true,
+				},
+				update: {
+					status: WAMessageStatus.ERROR,
+					messageStubParameters: ["479"],
+				},
+			},
+		]);
+		await delay(0);
 
-    harness.fakeClient.ev.emit('messages.upsert', {
-      type: 'notify',
-      messages: [{
-        key: {
-          id: 'newsletter-ack-rejected-1',
-          remoteJid: '120363123456789@newsletter',
-          fromMe: true,
-        },
-        message: 'ghost copy should be skipped',
-      }],
-    });
-    await delay(0);
+		harness.fakeClient.ev.emit("messages.upsert", {
+			type: "notify",
+			messages: [
+				{
+					key: {
+						id: "newsletter-ack-rejected-1",
+						remoteJid: "120363123456789@newsletter",
+						fromMe: true,
+					},
+					message: "ghost copy should be skipped",
+				},
+			],
+		});
+		await delay(0);
 
-    assert.equal(harness.forwarded.messages.length, 0);
-  } finally {
-    harness.cleanup();
-  }
+		assert.equal(harness.forwarded.messages.length, 0);
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('oneWay gating blocks Discord -> WhatsApp sends', async () => {
-  const harness = await setupWhatsAppHarness({ oneWay: 0b01 });
-  try {
-    harness.fakeClient.ev.emit('discordDelete', { jid: 'jid@s.whatsapp.net', id: 'wa-msg' });
-    harness.fakeClient.ev.emit('discordEdit', {
-      jid: 'jid@s.whatsapp.net',
-      message: {
-        id: 'dc-msg',
-        cleanContent: 'edited',
-        content: 'edited',
-        webhookId: null,
-        author: { username: 'You' },
-        channel: { send: async () => {} },
-      },
-    });
-    harness.fakeClient.ev.emit('discordReaction', {
-      jid: 'jid@s.whatsapp.net',
-      removed: false,
-      reaction: {
-        emoji: { name: '🔥' },
-        message: {
-          id: 'dc-react',
-          webhookId: null,
-          author: { username: 'You' },
-        },
-      },
-    });
-    await delay(0);
-    assert.equal(harness.fakeClient.sendCalls.length, 0);
-  } finally {
-    harness.cleanup();
-  }
+test("oneWay gating blocks Discord -> WhatsApp sends", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b01 });
+	try {
+		harness.fakeClient.ev.emit("discordDelete", {
+			jid: "jid@s.whatsapp.net",
+			id: "wa-msg",
+		});
+		harness.fakeClient.ev.emit("discordEdit", {
+			jid: "jid@s.whatsapp.net",
+			message: {
+				id: "dc-msg",
+				cleanContent: "edited",
+				content: "edited",
+				webhookId: null,
+				author: { username: "You" },
+				channel: { send: async () => {} },
+			},
+		});
+		harness.fakeClient.ev.emit("discordReaction", {
+			jid: "jid@s.whatsapp.net",
+			removed: false,
+			reaction: {
+				emoji: { name: "🔥" },
+				message: {
+					id: "dc-react",
+					webhookId: null,
+					author: { username: "You" },
+				},
+			},
+		});
+		await delay(0);
+		assert.equal(harness.fakeClient.sendCalls.length, 0);
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('WhatsApp delete events emit whatsappDelete to Discord', async () => {
-  const harness = await setupWhatsAppHarness();
-  try {
-    harness.fakeClient.ev.emit('messages.delete', { keys: [{ id: 'wa-del', remoteJid: 'jid@s.whatsapp.net' }] });
-    await delay(0);
-    assert.deepEqual(harness.forwarded.deletes, [{ id: 'wa-del', jid: 'jid@s.whatsapp.net' }]);
-  } finally {
-    harness.cleanup();
-  }
+test("WhatsApp delete events emit whatsappDelete to Discord", async () => {
+	const harness = await setupWhatsAppHarness();
+	try {
+		harness.fakeClient.ev.emit("messages.delete", {
+			keys: [{ id: "wa-del", remoteJid: "jid@s.whatsapp.net" }],
+		});
+		await delay(0);
+		assert.deepEqual(harness.forwarded.deletes, [
+			{ id: "wa-del", jid: "jid@s.whatsapp.net" },
+		]);
+	} finally {
+		harness.cleanup();
+	}
 });
 
-test('WhatsApp edited messages are flagged as edits', async () => {
-  const harness = await setupWhatsAppHarness({
-    getMessageType: () => 'editedMessage',
-  });
-  try {
-    harness.fakeClient.ev.emit('messages.upsert', {
-      type: 'notify',
-      messages: [{
-        key: { id: 'edit-id', remoteJid: 'jid@s.whatsapp.net' },
-        message: 'edited hello',
-      }],
-    });
-    await delay(0);
-    assert.equal(harness.forwarded.messages[0]?.isEdit, true);
-  } finally {
-    harness.cleanup();
-  }
+test("WhatsApp edited messages are flagged as edits", async () => {
+	const harness = await setupWhatsAppHarness({
+		getMessageType: () => "editedMessage",
+	});
+	try {
+		harness.fakeClient.ev.emit("messages.upsert", {
+			type: "notify",
+			messages: [
+				{
+					key: { id: "edit-id", remoteJid: "jid@s.whatsapp.net" },
+					message: "edited hello",
+				},
+			],
+		});
+		await delay(0);
+		assert.equal(harness.forwarded.messages[0]?.isEdit, true);
+	} finally {
+		harness.cleanup();
+	}
 });

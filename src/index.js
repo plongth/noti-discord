@@ -1,202 +1,231 @@
-import nodeCrypto from 'crypto';
-import pino from 'pino';
-import pretty from 'pino-pretty';
-import fs from 'fs';
+import nodeCrypto from "node:crypto";
+import fs from "node:fs";
+import pino from "pino";
+import pretty from "pino-pretty";
 
-import discordHandler from './discordHandler.js';
-import state from './state.js';
-import utils from './utils.js';
-import storage from './storage.js';
-import whatsappHandler from './whatsappHandler.js';
-import { isRecoverableUnhandledRejection } from './processErrors.js';
+import discordHandler from "./discordHandler.js";
+import { isRecoverableUnhandledRejection } from "./processErrors.js";
+import state from "./state.js";
+import storage from "./storage.js";
+import utils from "./utils.js";
+import whatsappHandler from "./whatsappHandler.js";
 
-const isSmokeTest = process.env.WA2DC_SMOKE_TEST === '1';
+const isSmokeTest = process.env.WA2DC_SMOKE_TEST === "1";
 
 if (!globalThis.crypto) {
-  globalThis.crypto = nodeCrypto.webcrypto;
+	globalThis.crypto = nodeCrypto.webcrypto;
 }
 
 (async () => {
-  const version = 'v2.1.6-beta.2';
-  state.version = version;
-  const streams = [
-    { stream: pino.destination('logs.txt') },
-    { stream: pretty({ colorize: true }) },
-  ];
-  state.logger = pino({ mixin() { return { version }; } }, pino.multistream(streams));
-  let autoSaver = setInterval(() => storage.save(), 5 * 60 * 1000);
-  let shuttingDown = false;
-  ['SIGINT', 'SIGTERM', 'uncaughtException', 'unhandledRejection'].forEach((eventName) => {
-    process.on(eventName, async (err) => {
-      if (eventName === 'unhandledRejection' && isRecoverableUnhandledRejection(err)) {
-        state.logger.warn({ err }, 'Ignoring recoverable network rejection');
-        return;
-      }
-      if (shuttingDown) {
-        return;
-      }
-      shuttingDown = true;
-      clearInterval(autoSaver);
-      if (err != null) {
-        state.logger.error(err);
-      }
-      state.logger.info('Exiting!');
-      let logs = '';
-      try {
-        logs = await fs.promises.readFile('logs.txt', 'utf8');
-        logs = logs.split('\n').slice(-20).join('\n');
-      } catch (readErr) {
-        void readErr;
-      }
-      const content = `Bot crashed: \n\n\u0060\u0060\u0060\n${err?.stack || err}\n\u0060\u0060\u0060` +
-        (logs ? `\nRecent logs:\n\u0060\u0060\u0060\n${logs}\n\u0060\u0060\u0060` : '');
-      let sent = false;
-      try {
-        const ctrl = await utils.discord.getControlChannel();
-        if (ctrl) {
-          if (content.length > 2000) {
-            await ctrl.send({
-              content: `${content.slice(0, 1997)}...`,
-              files: [{ attachment: Buffer.from(content, 'utf8'), name: 'crash.txt' }],
-            });
-          } else {
-            await ctrl.send(content);
-          }
-          sent = true;
-        }
-      } catch (e) {
-        state.logger.error('Failed to send crash info to Discord');
-        state.logger.error(e);
-      }
-      if (!sent) {
-        try {
-          await fs.promises.writeFile('crash-report.txt', content, 'utf8');
-        } catch (e) {
-          state.logger.error('Failed to write crash report to disk');
-          state.logger.error(e);
-        }
-      }
-      try {
-        await storage.save();
-      } catch (e) {
-        state.logger.error('Failed to save storage');
-        state.logger.error(e);
-      }
-      process.exit(['SIGINT', 'SIGTERM'].includes(eventName) ? 0 : 1);
-    });
-  });
+	const version = "v2.1.6-beta.2";
+	state.version = version;
+	const streams = [
+		{ stream: pino.destination("logs.txt") },
+		{ stream: pretty({ colorize: true }) },
+	];
+	state.logger = pino(
+		{
+			mixin() {
+				return { version };
+			},
+		},
+		pino.multistream(streams),
+	);
+	let autoSaver = setInterval(() => storage.save(), 5 * 60 * 1000);
+	let shuttingDown = false;
+	["SIGINT", "SIGTERM", "uncaughtException", "unhandledRejection"].forEach(
+		(eventName) => {
+			process.on(eventName, async (err) => {
+				if (
+					eventName === "unhandledRejection" &&
+					isRecoverableUnhandledRejection(err)
+				) {
+					state.logger.warn({ err }, "Ignoring recoverable network rejection");
+					return;
+				}
+				if (shuttingDown) {
+					return;
+				}
+				shuttingDown = true;
+				clearInterval(autoSaver);
+				if (err != null) {
+					state.logger.error(err);
+				}
+				state.logger.info("Exiting!");
+				let logs = "";
+				try {
+					logs = await fs.promises.readFile("logs.txt", "utf8");
+					logs = logs.split("\n").slice(-20).join("\n");
+				} catch (readErr) {
+					void readErr;
+				}
+				const content =
+					`Bot crashed: \n\n\u0060\u0060\u0060\n${err?.stack || err}\n\u0060\u0060\u0060` +
+					(logs
+						? `\nRecent logs:\n\u0060\u0060\u0060\n${logs}\n\u0060\u0060\u0060`
+						: "");
+				let sent = false;
+				try {
+					const ctrl = await utils.discord.getControlChannel();
+					if (ctrl) {
+						if (content.length > 2000) {
+							await ctrl.send({
+								content: `${content.slice(0, 1997)}...`,
+								files: [
+									{
+										attachment: Buffer.from(content, "utf8"),
+										name: "crash.txt",
+									},
+								],
+							});
+						} else {
+							await ctrl.send(content);
+						}
+						sent = true;
+					}
+				} catch (e) {
+					state.logger.error("Failed to send crash info to Discord");
+					state.logger.error(e);
+				}
+				if (!sent) {
+					try {
+						await fs.promises.writeFile("crash-report.txt", content, "utf8");
+					} catch (e) {
+						state.logger.error("Failed to write crash report to disk");
+						state.logger.error(e);
+					}
+				}
+				try {
+					await storage.save();
+				} catch (e) {
+					state.logger.error("Failed to save storage");
+					state.logger.error(e);
+				}
+				process.exit(["SIGINT", "SIGTERM"].includes(eventName) ? 0 : 1);
+			});
+		},
+	);
 
-  state.logger.info('Starting');
+	state.logger.info("Starting");
 
-  const conversion = await utils.sqliteToJson.convert();
-  if (!conversion) {
-    state.logger.error('Conversion failed!');
-    process.exit(1);
-  }
-  state.logger.info('Conversion completed.');
+	const conversion = await utils.sqliteToJson.convert();
+	if (!conversion) {
+		state.logger.error("Conversion failed!");
+		process.exit(1);
+	}
+	state.logger.info("Conversion completed.");
 
-  try {
-    await storage.ensureInitialized();
-    state.logger.info('SQLite storage initialized.');
-  } catch (err) {
-    state.logger.error({ err }, 'Failed to initialize SQLite storage');
-    process.exit(1);
-  }
+	try {
+		await storage.ensureInitialized();
+		state.logger.info("SQLite storage initialized.");
+	} catch (err) {
+		state.logger.error({ err }, "Failed to initialize SQLite storage");
+		process.exit(1);
+	}
 
-  state.settings = await storage.parseSettings();
-  state.logger.info('Loaded settings.');
-  if (isSmokeTest) {
-    state.logger.info('Running in smoke-test mode; external clients are skipped.');
-  }
-  if (utils.whatsapp.normalizeMentionLinks()) {
-    await storage.saveSettings().catch(() => {});
-    state.logger.info('Normalized WhatsApp→Discord mention links.');
-  }
+	state.settings = await storage.parseSettings();
+	state.logger.info("Loaded settings.");
+	if (isSmokeTest) {
+		state.logger.info(
+			"Running in smoke-test mode; external clients are skipped.",
+		);
+	}
+	if (utils.whatsapp.normalizeMentionLinks()) {
+		await storage.saveSettings().catch(() => {});
+		state.logger.info("Normalized WhatsApp→Discord mention links.");
+	}
 
-  utils.ensureDownloadServer();
+	utils.ensureDownloadServer();
 
-  clearInterval(autoSaver);
-  autoSaver = setInterval(() => storage.save(), state.settings.autoSaveInterval * 1000);
-  state.logger.info('Changed auto save interval.');
+	clearInterval(autoSaver);
+	autoSaver = setInterval(
+		() => storage.save(),
+		state.settings.autoSaveInterval * 1000,
+	);
+	state.logger.info("Changed auto save interval.");
 
-  state.contacts = await storage.parseContacts();
-  state.logger.info('Loaded contacts.');
+	state.contacts = await storage.parseContacts();
+	state.logger.info("Loaded contacts.");
 
-  state.chats = await storage.parseChats();
-  state.logger.info('Loaded chats.');
+	state.chats = await storage.parseChats();
+	state.logger.info("Loaded chats.");
 
-  state.startTime = await storage.parseStartTime();
-  state.logger.info('Loaded last timestamp.');
+	state.startTime = await storage.parseStartTime();
+	state.logger.info("Loaded last timestamp.");
 
-  state.lastMessages = await storage.parseLastMessages();
-  state.logger.info('Loaded last messages.');
+	state.lastMessages = await storage.parseLastMessages();
+	state.logger.info("Loaded last messages.");
 
-  if (!isSmokeTest) {
-    state.dcClient = await discordHandler.start();
-    state.logger.info('Discord client started.');
+	if (!isSmokeTest) {
+		state.dcClient = await discordHandler.start();
+		state.logger.info("Discord client started.");
 
-    await utils.discord.repairChannels();
-    await discordHandler.setControlChannel();
-    state.logger.info('Repaired channels.');
-  } else {
-    state.logger.info('Skipping Discord bootstrap for smoke test.');
-  }
+		await utils.discord.repairChannels();
+		await discordHandler.setControlChannel();
+		state.logger.info("Repaired channels.");
+	} else {
+		state.logger.info("Skipping Discord bootstrap for smoke test.");
+	}
 
-  if (!isSmokeTest) {
+	if (!isSmokeTest) {
+		try {
+			const crashFile = "crash-report.txt";
+			const queued = await fs.promises.readFile(crashFile, "utf8");
+			const ctrl = await utils.discord.getControlChannel();
+			if (ctrl) {
+				if (queued.length > 2000) {
+					await ctrl.send({
+						content: `${queued.slice(0, 1997)}...`,
+						files: [
+							{ attachment: Buffer.from(queued, "utf8"), name: "crash.txt" },
+						],
+					});
+				} else {
+					await ctrl.send(queued);
+				}
+				await fs.promises.unlink(crashFile);
+				state.logger.info("Queued crash report sent.");
+			}
+		} catch (e) {
+			if (e.code !== "ENOENT") {
+				state.logger.error("Failed to send queued crash report");
+				state.logger.error(e);
+			}
+		}
+	} else {
+		state.logger.info("Skipping crash report replay for smoke test.");
+	}
 
-    try {
-      const crashFile = 'crash-report.txt';
-      const queued = await fs.promises.readFile(crashFile, 'utf8');
-      const ctrl = await utils.discord.getControlChannel();
-      if (ctrl) {
-        if (queued.length > 2000) {
-          await ctrl.send({
-            content: `${queued.slice(0, 1997)}...`,
-            files: [{ attachment: Buffer.from(queued, 'utf8'), name: 'crash.txt' }],
-          });
-        } else {
-          await ctrl.send(queued);
-        }
-        await fs.promises.unlink(crashFile);
-        state.logger.info('Queued crash report sent.');
-      }
-    } catch (e) {
-      if (e.code !== 'ENOENT') {
-        state.logger.error('Failed to send queued crash report');
-        state.logger.error(e);
-      }
-    }
-  } else {
-    state.logger.info('Skipping crash report replay for smoke test.');
-  }
+	if (!isSmokeTest) {
+		await whatsappHandler.start();
+		state.logger.info("WhatsApp client started.");
+	} else {
+		state.logger.info("Skipping WhatsApp bootstrap for smoke test.");
+	}
 
-  if (!isSmokeTest) {
-    await whatsappHandler.start();
-    state.logger.info('WhatsApp client started.');
-  } else {
-    state.logger.info('Skipping WhatsApp bootstrap for smoke test.');
-  }
+	if (!isSmokeTest) {
+		await utils.updater.run(version, { prompt: false });
+		state.logger.info("Update checked.");
+		await utils.discord.syncUpdatePrompt();
+		await utils.discord.syncRollbackPrompt();
 
-  if (!isSmokeTest) {
-    await utils.updater.run(version, { prompt: false });
-    state.logger.info('Update checked.');
-    await utils.discord.syncUpdatePrompt();
-    await utils.discord.syncRollbackPrompt();
+		setInterval(
+			async () => {
+				await utils.updater.run(version, { prompt: false });
+				await utils.discord.syncUpdatePrompt();
+				await utils.discord.syncRollbackPrompt();
+			},
+			2 * 24 * 60 * 60 * 1000,
+		);
+	} else {
+		state.logger.info("Skipping update checks for smoke test.");
+	}
 
-    setInterval(async () => {
-      await utils.updater.run(version, { prompt: false });
-      await utils.discord.syncUpdatePrompt();
-      await utils.discord.syncRollbackPrompt();
-    }, 2 * 24 * 60 * 60 * 1000);
-  } else {
-    state.logger.info('Skipping update checks for smoke test.');
-  }
+	state.logger.info("Bot is now running. Press CTRL-C to exit.");
 
-  state.logger.info('Bot is now running. Press CTRL-C to exit.');
-
-  if (isSmokeTest) {
-    clearInterval(autoSaver);
-    state.logger.info('Smoke test completed successfully.');
-    process.exit(0);
-  }
+	if (isSmokeTest) {
+		clearInterval(autoSaver);
+		state.logger.info("Smoke test completed successfully.");
+		process.exit(0);
+	}
 })();
