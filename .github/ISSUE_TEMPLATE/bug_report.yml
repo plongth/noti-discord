@@ -39,7 +39,7 @@ body:
     attributes:
       label: WA2DC version
       description: Release tag / Docker image tag / `package.json` version (for source builds).
-      placeholder: "v2.1.4 / stable / v2.1.5-beta.3"
+      placeholder: "v2.1.4 / stable / v2.1.5-2.1.6"
     validations:
       required: true
 

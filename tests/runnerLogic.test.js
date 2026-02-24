@@ -247,40 +247,50 @@ test("parseRestartFlagPayload ignores unsupported reason and blank version", () 
 });
 
 test("resolveRollbackBackupCandidates returns cwd + exec-path candidates", () => {
+	const cwd = path.join(path.sep, "tmp", "app");
+	const execPath = path.join(path.sep, "opt", "bin", "WA2DC");
+	const cwdCandidate = path.resolve(cwd, "WA2DC.oldVersion");
+	const execCandidate = path.join(path.dirname(execPath), "WA2DC.oldVersion");
+
 	const candidates = resolveRollbackBackupCandidates({
 		currentExeName: "WA2DC",
-		execPath: "/opt/bin/WA2DC",
-		cwd: "/tmp/app",
+		execPath,
+		cwd,
 	});
-	assert.deepEqual(candidates, [
-		"/tmp/app/WA2DC.oldVersion",
-		"/opt/bin/WA2DC.oldVersion",
-	]);
+	assert.deepEqual(candidates, [cwdCandidate, execCandidate]);
 });
 
 test("findRollbackBackupPathSync returns first existing candidate", () => {
+	const cwd = path.join(path.sep, "tmp", "app");
+	const execPath = path.join(path.sep, "opt", "bin", "WA2DC");
+	const expected = path.resolve(cwd, "WA2DC.oldVersion");
+
 	const fakeFs = {
 		existsSync(value) {
-			return value === "/tmp/app/WA2DC.oldVersion";
+			return value === expected;
 		},
 	};
 
 	assert.equal(
 		findRollbackBackupPathSync({
 			currentExeName: "WA2DC",
-			execPath: "/opt/bin/WA2DC",
-			cwd: "/tmp/app",
+			execPath,
+			cwd,
 			fsModule: fakeFs,
 		}),
-		"/tmp/app/WA2DC.oldVersion",
+		expected,
 	);
 });
 
 test("revertExecutableToBackupSync succeeds when backup exists", () => {
+	const cwd = path.join(path.sep, "tmp", "app");
+	const execPath = path.join(path.sep, "opt", "bin", "WA2DC");
+	const expectedBackup = path.resolve(cwd, "WA2DC.oldVersion");
+
 	const calls = [];
 	const fakeFs = {
 		existsSync(value) {
-			return value === "/tmp/app/WA2DC.oldVersion";
+			return value === expectedBackup;
 		},
 		rmSync(target, options) {
 			calls.push(["rmSync", target, options]);
@@ -292,17 +302,17 @@ test("revertExecutableToBackupSync succeeds when backup exists", () => {
 
 	const result = revertExecutableToBackupSync({
 		currentExeName: "WA2DC",
-		execPath: "/opt/bin/WA2DC",
-		cwd: "/tmp/app",
+		execPath,
+		cwd,
 		fsModule: fakeFs,
 	});
 
 	assert.equal(result.success, true);
-	assert.equal(result.backupPath, "/tmp/app/WA2DC.oldVersion");
-	assert.equal(result.currentPath, "/opt/bin/WA2DC");
+	assert.equal(result.backupPath, expectedBackup);
+	assert.equal(result.currentPath, execPath);
 	assert.deepEqual(calls, [
-		["rmSync", "/opt/bin/WA2DC", { force: true }],
-		["renameSync", "/tmp/app/WA2DC.oldVersion", "/opt/bin/WA2DC"],
+		["rmSync", execPath, { force: true }],
+		["renameSync", expectedBackup, execPath],
 	]);
 });
 
