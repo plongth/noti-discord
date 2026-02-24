@@ -1,126 +1,145 @@
-import assert from 'node:assert/strict';
-import test from 'node:test';
+import assert from "node:assert/strict";
+import test from "node:test";
 
-import state from '../src/state.js';
-import utils from '../src/utils.js';
+import state from "../src/state.js";
+import utils from "../src/utils.js";
 
 const snapshotObject = (value) => ({ ...value });
 const restoreObject = (target, snapshot) => {
-  Object.keys(target).forEach((key) => { delete target[key]; });
-  Object.assign(target, snapshot);
+	Object.keys(target).forEach((key) => {
+		delete target[key];
+	});
+	Object.assign(target, snapshot);
 };
 
-test('updateContacts does not overwrite existing names with pushName updates', () => {
-  const originalWaClient = state.waClient;
-  const originalContacts = snapshotObject(state.contacts);
+test("updateContacts does not overwrite existing names with pushName updates", () => {
+	const originalWaClient = state.waClient;
+	const originalContacts = snapshotObject(state.contacts);
 
-  try {
-    restoreObject(state.contacts, {});
-    state.waClient = { contacts: state.contacts };
+	try {
+		restoreObject(state.contacts, {});
+		state.waClient = { contacts: state.contacts };
 
-    const jid = '14155550123@s.whatsapp.net';
-    state.contacts[jid] = 'Alice Doe';
+		const jid = "14155550123@s.whatsapp.net";
+		state.contacts[jid] = "Alice Doe";
 
-    utils.whatsapp.updateContacts([{
-      id: jid,
-      notify: 'Alice',
-      pushName: 'Alice',
-    }]);
+		utils.whatsapp.updateContacts([
+			{
+				id: jid,
+				notify: "Alice",
+				pushName: "Alice",
+			},
+		]);
 
-    assert.equal(state.contacts[jid], 'Alice Doe');
-  } finally {
-    state.waClient = originalWaClient;
-    restoreObject(state.contacts, originalContacts);
-  }
+		assert.equal(state.contacts[jid], "Alice Doe");
+	} finally {
+		state.waClient = originalWaClient;
+		restoreObject(state.contacts, originalContacts);
+	}
 });
 
-test('updateContacts overwrites fallback phone numbers with better names', () => {
-  const originalWaClient = state.waClient;
-  const originalContacts = snapshotObject(state.contacts);
+test("updateContacts overwrites fallback phone numbers with better names", () => {
+	const originalWaClient = state.waClient;
+	const originalContacts = snapshotObject(state.contacts);
 
-  try {
-    restoreObject(state.contacts, {});
-    state.waClient = { contacts: state.contacts };
+	try {
+		restoreObject(state.contacts, {});
+		state.waClient = { contacts: state.contacts };
 
-    const jid = '14155550123@s.whatsapp.net';
-    state.contacts[jid] = '14155550123';
+		const jid = "14155550123@s.whatsapp.net";
+		state.contacts[jid] = "14155550123";
 
-    utils.whatsapp.updateContacts([{
-      id: jid,
-      notify: 'Alice',
-    }]);
+		utils.whatsapp.updateContacts([
+			{
+				id: jid,
+				notify: "Alice",
+			},
+		]);
 
-    assert.equal(state.contacts[jid], 'Alice');
-  } finally {
-    state.waClient = originalWaClient;
-    restoreObject(state.contacts, originalContacts);
-  }
+		assert.equal(state.contacts[jid], "Alice");
+	} finally {
+		state.waClient = originalWaClient;
+		restoreObject(state.contacts, originalContacts);
+	}
 });
 
-test('updateContacts stores names for both PN and LID when available', () => {
-  const originalWaClient = state.waClient;
-  const originalContacts = snapshotObject(state.contacts);
+test("updateContacts stores names for both PN and LID when available", () => {
+	const originalWaClient = state.waClient;
+	const originalContacts = snapshotObject(state.contacts);
 
-  try {
-    restoreObject(state.contacts, {});
-    state.waClient = { contacts: state.contacts, user: { id: '0@s.whatsapp.net' } };
+	try {
+		restoreObject(state.contacts, {});
+		state.waClient = {
+			contacts: state.contacts,
+			user: { id: "0@s.whatsapp.net" },
+		};
 
-    const pnJid = '14155550123@s.whatsapp.net';
-    const lidJid = '161040050426060@lid';
+		const pnJid = "14155550123@s.whatsapp.net";
+		const lidJid = "161040050426060@lid";
 
-    utils.whatsapp.updateContacts([{
-      id: pnJid,
-      lid: lidJid,
-      notify: 'Alice Doe',
-    }]);
+		utils.whatsapp.updateContacts([
+			{
+				id: pnJid,
+				lid: lidJid,
+				notify: "Alice Doe",
+			},
+		]);
 
-    assert.equal(state.contacts[pnJid], 'Alice Doe');
-    assert.equal(state.contacts[lidJid], 'Alice Doe');
-    assert.equal(utils.whatsapp.jidToName(lidJid), 'Alice Doe');
-  } finally {
-    state.waClient = originalWaClient;
-    restoreObject(state.contacts, originalContacts);
-  }
+		assert.equal(state.contacts[pnJid], "Alice Doe");
+		assert.equal(state.contacts[lidJid], "Alice Doe");
+		assert.equal(utils.whatsapp.jidToName(lidJid), "Alice Doe");
+	} finally {
+		state.waClient = originalWaClient;
+		restoreObject(state.contacts, originalContacts);
+	}
 });
 
-test('jidToName falls back when contact name is blank/whitespace', () => {
-  const originalWaClient = state.waClient;
-  const originalContacts = snapshotObject(state.contacts);
+test("jidToName falls back when contact name is blank/whitespace", () => {
+	const originalWaClient = state.waClient;
+	const originalContacts = snapshotObject(state.contacts);
 
-  try {
-    restoreObject(state.contacts, {});
-    state.waClient = { contacts: state.contacts, user: { id: '0@s.whatsapp.net' } };
+	try {
+		restoreObject(state.contacts, {});
+		state.waClient = {
+			contacts: state.contacts,
+			user: { id: "0@s.whatsapp.net" },
+		};
 
-    const jid = '14155550123@s.whatsapp.net';
-    state.contacts[jid] = '   ';
+		const jid = "14155550123@s.whatsapp.net";
+		state.contacts[jid] = "   ";
 
-    assert.equal(utils.whatsapp.jidToName(jid), '14155550123');
-  } finally {
-    state.waClient = originalWaClient;
-    restoreObject(state.contacts, originalContacts);
-  }
+		assert.equal(utils.whatsapp.jidToName(jid), "14155550123");
+	} finally {
+		state.waClient = originalWaClient;
+		restoreObject(state.contacts, originalContacts);
+	}
 });
 
-test('updateContacts ignores blank/whitespace name candidates', () => {
-  const originalWaClient = state.waClient;
-  const originalContacts = snapshotObject(state.contacts);
+test("updateContacts ignores blank/whitespace name candidates", () => {
+	const originalWaClient = state.waClient;
+	const originalContacts = snapshotObject(state.contacts);
 
-  try {
-    restoreObject(state.contacts, {});
-    state.waClient = { contacts: state.contacts, user: { id: '0@s.whatsapp.net' } };
+	try {
+		restoreObject(state.contacts, {});
+		state.waClient = {
+			contacts: state.contacts,
+			user: { id: "0@s.whatsapp.net" },
+		};
 
-    const jid = '14155550123@s.whatsapp.net';
-    state.contacts[jid] = '14155550123';
+		const jid = "14155550123@s.whatsapp.net";
+		state.contacts[jid] = "14155550123";
 
-    utils.whatsapp.updateContacts([{
-      id: jid,
-      notify: '   ',
-      pushName: '',
-    }]);
+		utils.whatsapp.updateContacts([
+			{
+				id: jid,
+				notify: "   ",
+				pushName: "",
+			},
+		]);
 
-    assert.equal(state.contacts[jid], '14155550123');
-  } finally {
-    state.waClient = originalWaClient;
-    restoreObject(state.contacts, originalContacts);
-  }
+		assert.equal(state.contacts[jid], "14155550123");
+	} finally {
+		state.waClient = originalWaClient;
+		restoreObject(state.contacts, originalContacts);
+	}
 });
