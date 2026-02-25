@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import storage from "../src/storage.js";
 import utils from "../src/utils.js";
-
-await storage.ensureInitialized();
 
 test("Discord attachment/embed image URLs dedupe via proxy normalization", () => {
 	const cdnUrl =
