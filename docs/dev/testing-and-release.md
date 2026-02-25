@@ -8,7 +8,7 @@
 
 Preferred checks before handoff:
 
-- `npm run lint`
+- `npm run lint` (Biome)
 - `npm test`
 - `WA2DC_SMOKE_TEST=1 node src/index.js` for startup-sensitive changes
 

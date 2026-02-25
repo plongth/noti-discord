@@ -18,7 +18,7 @@ WhatsAppToDiscord (WA2DC) is a self-hosted bridge that mirrors WhatsApp chats in
 - Install: `npm ci`
 - Run bot: `npm start`
 - Run docs: `npm run docs`
-- Lint: `npm run lint`
+- Lint: `npm run lint` (Biome)
 - Test: `npm test`
 - Bundle: `npm run bundle`
 - Build binary: `npm run build:bin`
@@ -44,6 +44,7 @@ Use these docs for detailed guidance:
 - Respect whitelist and one-way routing checks when touching message flows.
 - Do not hardcode PN vs LID assumptions for WhatsApp identifiers.
 - Keep Discord output within platform limits (message length / file size).
+- Use Biome for linting/format checks.
 - Treat `out.js`, `out.cjs`, and `build/` as generated artifacts.
 - Never commit secrets (`.env`, auth state, tokens, session blobs).
 

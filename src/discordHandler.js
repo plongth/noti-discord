@@ -930,10 +930,14 @@ const sendWhatsappMessage = async (
 		};
 
 		const fileChunks = chunkArray(files, 10);
-		const idChunks = chunkArray(
-			messageIds.length ? messageIds : [message.id],
-			10,
-		);
+		const normalizedMessageIds = [
+			...new Set(
+				(messageIds.length ? messageIds : [message.id])
+					.map((id) => normalizeBridgeMessageId(id))
+					.filter(Boolean),
+			),
+		];
+		const idChunks = chunkArray(normalizedMessageIds, 10);
 
 		if (!fileChunks.length) fileChunks.push([]);
 
@@ -953,21 +957,34 @@ const sendWhatsappMessage = async (
 				message.channelJid,
 			);
 			cacheDiscordMessageLocation(lastDcMessage, webhook.channelId);
+			const lastDiscordMessageId = normalizeBridgeMessageId(lastDcMessage?.id);
+			if (!lastDiscordMessageId) {
+				state.logger?.warn?.(
+					{ jid: message.channelJid },
+					"Skipped WhatsApp message mapping because Discord webhook response had no message ID",
+				);
+				continue;
+			}
 
 			if (
 				i === 0 &&
-				AnnouncementChannelTypes.includes(lastDcMessage.channel.type) &&
+				AnnouncementChannelTypes.includes(lastDcMessage?.channel?.type) &&
 				state.settings.Publish
 			) {
 				await lastDcMessage.crosspost();
 			}
 
-			if (message.id != null) {
-				for (const waId of idChunks[i] || []) {
-					state.lastMessages[waId] = lastDcMessage.id;
-				}
-				if (i === 0) {
-					state.lastMessages[lastDcMessage.id] = message.id;
+			const waIdsForChunk = idChunks[i] || [];
+			for (const waId of waIdsForChunk) {
+				state.lastMessages[waId] = lastDiscordMessageId;
+			}
+			if (i === 0) {
+				const primaryWaId =
+					waIdsForChunk[0] ||
+					normalizedMessageIds[0] ||
+					normalizeBridgeMessageId(message?.id);
+				if (primaryWaId) {
+					state.lastMessages[lastDiscordMessageId] = primaryWaId;
 				}
 			}
 		}
@@ -5457,7 +5474,17 @@ client.on("messageReactionAdd", async (reaction, user) => {
 	) {
 		return;
 	}
-	let messageId = state.lastMessages[reaction.message.id];
+	const mappedMessageIds = collectMappedWhatsAppIdsForDiscordMessage(
+		reaction.message.id,
+	);
+	let messageId =
+		normalizeBridgeMessageId(state.lastMessages?.[reaction.message.id]) ||
+		mappedMessageIds[0] ||
+		null;
+	if (messageId) {
+		state.lastMessages[reaction.message.id] = messageId;
+		state.lastMessages[messageId] = reaction.message.id;
+	}
 	if (newsletterChat) {
 		const resolvedServerId = await waitForNewsletterServerId({
 			discordMessageId: reaction.message.id,
@@ -5502,7 +5529,12 @@ client.on("messageReactionAdd", async (reaction, user) => {
 			delete state.reactions[reaction.message.id];
 		}
 	}
-	state.waClient.ev.emit("discordReaction", { jid, reaction, removed: false });
+	state.waClient.ev.emit("discordReaction", {
+		jid,
+		reaction,
+		removed: false,
+		messageId,
+	});
 });
 
 client.on("messageReactionRemove", async (reaction, user) => {
@@ -5520,7 +5552,17 @@ client.on("messageReactionRemove", async (reaction, user) => {
 	) {
 		return;
 	}
-	let messageId = state.lastMessages[reaction.message.id];
+	const mappedMessageIds = collectMappedWhatsAppIdsForDiscordMessage(
+		reaction.message.id,
+	);
+	let messageId =
+		normalizeBridgeMessageId(state.lastMessages?.[reaction.message.id]) ||
+		mappedMessageIds[0] ||
+		null;
+	if (messageId) {
+		state.lastMessages[reaction.message.id] = messageId;
+		state.lastMessages[messageId] = reaction.message.id;
+	}
 	if (newsletterChat) {
 		const resolvedServerId = await waitForNewsletterServerId({
 			discordMessageId: reaction.message.id,
@@ -5565,7 +5607,12 @@ client.on("messageReactionRemove", async (reaction, user) => {
 			delete state.reactions[reaction.message.id];
 		}
 	}
-	state.waClient.ev.emit("discordReaction", { jid, reaction, removed: true });
+	state.waClient.ev.emit("discordReaction", {
+		jid,
+		reaction,
+		removed: true,
+		messageId,
+	});
 });
 
 const discordHandler = {

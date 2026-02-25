@@ -4263,15 +4263,30 @@ const connectToWhatsApp = async (retry = 1) => {
 		}
 	});
 
-	client.ev.on("discordReaction", async ({ jid, reaction, removed }) => {
+	client.ev.on(
+		"discordReaction",
+		async ({ jid, reaction, removed, messageId: resolvedMessageId }) => {
 		if (!allowsDiscordToWhatsApp()) {
 			return;
 		}
 
 		const targetJid = normalizeSendJid(jid);
 		const newsletterChat = isNewsletterJid(targetJid);
+		const mappedMessageId =
+			normalizeBridgeMessageId(resolvedMessageId) ||
+			normalizeBridgeMessageId(state.lastMessages[reaction.message.id]);
+		if (!mappedMessageId && !newsletterChat) {
+			state.logger?.warn?.(
+				{
+					jid: targetJid,
+					discordMessageId: reaction?.message?.id,
+				},
+				"Skipping Discord reaction because the linked WhatsApp message ID is unavailable",
+			);
+			return;
+		}
 		const key = {
-			id: state.lastMessages[reaction.message.id],
+			id: mappedMessageId,
 			fromMe:
 				reaction.message.webhookId == null ||
 				reaction.message.author.username === "You",
@@ -4400,7 +4415,8 @@ const connectToWhatsApp = async (retry = 1) => {
 		} catch (err) {
 			state.logger?.error(err);
 		}
-	});
+	},
+	);
 
 	client.ev.on("discordDelete", async ({ jid, id, discordMessageId }) => {
 		if (!allowsDiscordToWhatsApp()) {
