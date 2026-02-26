@@ -30,6 +30,14 @@ const restoreSet = (target, snapshot) => {
 		target.add(entry);
 	});
 };
+const waitFor = async (predicate, { timeoutMs = 1000, intervalMs = 5 } = {}) => {
+	const deadline = Date.now() + timeoutMs;
+	while (true) {
+		if (predicate()) return true;
+		if (Date.now() >= deadline) return false;
+		await delay(intervalMs);
+	}
+};
 
 const setupWhatsAppHarness = async ({
 	oneWay = 0b11,
@@ -1508,8 +1516,11 @@ test("Discord voice-style audio attachments are sent as WhatsApp ptt messages", 
 			},
 		});
 
-		await delay(80);
+		const sent = await waitFor(() => harness.fakeClient.sendCalls.length === 1, {
+			timeoutMs: 1500,
+		});
 
+		assert.equal(sent, true);
 		assert.equal(harness.fakeClient.sendCalls.length, 1);
 		const sentContent = harness.fakeClient.sendCalls[0]?.content || {};
 		assert.equal(sentContent.ptt, true);
@@ -1561,8 +1572,11 @@ test("Regular Discord audio attachments are not forced into ptt mode", async () 
 			},
 		});
 
-		await delay(80);
+		const sent = await waitFor(() => harness.fakeClient.sendCalls.length === 1, {
+			timeoutMs: 1500,
+		});
 
+		assert.equal(sent, true);
 		assert.equal(harness.fakeClient.sendCalls.length, 1);
 		const sentContent = harness.fakeClient.sendCalls[0]?.content || {};
 		assert.notEqual(sentContent.ptt, true);
@@ -2213,8 +2227,9 @@ test("Newsletter unsupported attachments are skipped with FAQ notice", async () 
 			},
 		});
 
-		await delay(80);
+		const notified = await waitFor(() => notices.length === 1, { timeoutMs: 1500 });
 
+		assert.equal(notified, true);
 		assert.equal(harness.fakeClient.sendCalls.length, 0);
 		assert.equal(notices.length, 1);
 		assert.ok(String(notices[0]).includes("allow only image/video"));
@@ -2530,8 +2545,12 @@ test("Newsletter URL fallback disabled keeps text and drops attachment links", a
 			},
 		});
 
-		await delay(80);
+		const settled = await waitFor(
+			() => harness.fakeClient.sendCalls.length === 1 && notices.length === 1,
+			{ timeoutMs: 1500 },
+		);
 
+		assert.equal(settled, true);
 		assert.equal(harness.fakeClient.sendCalls.length, 1);
 		assert.equal(
 			harness.fakeClient.sendCalls[0]?.content?.text,
