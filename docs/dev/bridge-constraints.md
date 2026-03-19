@@ -1,7 +1,7 @@
 # Bridge Constraints
 
 > Owner: WA2DC maintainers
-> Last reviewed: 2026-02-13
+> Last reviewed: 2026-03-19
 > Scope: Message-routing and identity constraints that prevent regressions.
 
 ## Echo-loop prevention
@@ -32,6 +32,8 @@ Respect transport constraints when emitting output:
 - 2000-character message limit
 - use `utils.discord.partitionText(...)` for long responses
 - respect file-size gating (for example `DiscordFileSizeLimit`)
+- preserve Discord -> WhatsApp attachment delivery for unsupported static image formats by normalizing them to WhatsApp-safe image payloads when possible, and fall back to document delivery instead of dropping the message when normalization fails
+- do not flatten or duplicate animated Discord media just to satisfy static image normalization paths; when Discord exposes both a GIF file entry and its preview video for the same upload, prefer a single animated send candidate
 
 ## Routing gates
 

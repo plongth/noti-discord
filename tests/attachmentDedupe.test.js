@@ -46,3 +46,55 @@ test("Discord mergeCollectedAttachments dedupes across attachment groups", () =>
 	assert.equal(merged[0].name, "file.png");
 	assert.equal(merged[1].name, "other.png");
 });
+
+test("Discord GIF upload previews prefer a single animated video candidate", () => {
+	const attachmentUrl =
+		"https://cdn.discordapp.com/attachments/123/456/funny-cat.gif?ex=abc&is=def";
+	const previewUrl =
+		"https://media.discordapp.net/attachments/123/456/funny-cat.mp4?width=320&height=240";
+
+	const collected = utils.discord.collectMessageMedia(
+		{
+			attachments: new Map([
+				[
+					"attachment-1",
+					{
+						id: "attachment-1",
+						url: attachmentUrl,
+						name: "funny-cat.gif",
+						contentType: "image/gif",
+					},
+				],
+			]),
+			stickers: new Map(),
+			embeds: [
+				{
+					title: "Funny Cat",
+					video: {
+						url: previewUrl,
+					},
+				},
+			],
+		},
+	);
+
+	assert.equal(collected.attachments.length, 1);
+	assert.equal(collected.attachments[0]?.url, previewUrl);
+	assert.equal(collected.attachments[0]?.contentType, "video/mp4");
+	assert.equal(collected.attachments[0]?.gifPlayback, true);
+});
+
+test("WhatsApp document content preserves gifPlayback for collected GIF videos", () => {
+	const content = utils.whatsapp.createDocumentContent({
+		url: "https://media.discordapp.net/attachments/123/456/funny-cat.mp4",
+		name: "funny-cat.mp4",
+		contentType: "video/mp4",
+		gifPlayback: true,
+	});
+
+	assert.deepEqual(content.video, {
+		url: "https://media.discordapp.net/attachments/123/456/funny-cat.mp4",
+	});
+	assert.equal(content.mimetype, "video/mp4");
+	assert.equal(content.gifPlayback, true);
+});

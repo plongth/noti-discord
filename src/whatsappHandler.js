@@ -1,3 +1,5 @@
+import path from "node:path";
+import { createRequire } from "node:module";
 import {
 	DisconnectReason,
 	getAggregateVotesInPollMessage,
@@ -200,9 +202,26 @@ const NEWSLETTER_MEDIA_STANZA_DEBUG_ENABLED =
 	process.env.WA2DC_NEWSLETTER_MEDIA_DEBUG !== "0";
 const NEWSLETTER_IMAGE_NORMALIZATION_MAX_BYTES = 25 * 1024 * 1024;
 const NEWSLETTER_IMAGE_JPEG_MIME_TYPES = new Set(["image/jpeg", "image/jpg"]);
+const WHATSAPP_SAFE_IMAGE_MIME_TYPES = new Set([
+	"image/jpeg",
+	"image/jpg",
+	"image/png",
+]);
+const WHATSAPP_PRESERVE_SOURCE_IMAGE_MIME_TYPES = new Set(["image/gif"]);
+const WHATSAPP_PREFER_PNG_NORMALIZATION_MIME_TYPES = new Set([
+	"image/png",
+	"image/webp",
+	"image/avif",
+	"image/heic",
+	"image/heif",
+	"image/bmp",
+	"image/tiff",
+]);
 const newsletterLiveUpdatesExpiresAt = new Map();
 const newsletterMediaStanzaDebug = new Map();
 let newsletterImageJimpPromise = null;
+let imageSharpPromise = null;
+let packagedSharpRequire = null;
 const DISCORD_ATTACHMENT_MIME_BY_EXTENSION = {
 	gif: "image/gif",
 	jpg: "image/jpeg",
@@ -627,7 +646,50 @@ const getNewsletterImageJimp = async () => {
 	return newsletterImageJimpPromise;
 };
 
-const loadNewsletterImageBuffer = async (source = null) => {
+const getPackagedSharpRequire = () => {
+	if (!process.pkg) {
+		return null;
+	}
+	if (!packagedSharpRequire) {
+		const runtimePackagePath = path.join(
+			path.dirname(process.execPath),
+			"runtime",
+			"package.json",
+		);
+		packagedSharpRequire = createRequire(runtimePackagePath);
+	}
+	return packagedSharpRequire;
+};
+
+const getImageSharp = async () => {
+	if (!imageSharpPromise) {
+		imageSharpPromise = (async () => {
+			if (process.pkg) {
+				try {
+					const sharpFromSidecar = getPackagedSharpRequire()?.("sharp");
+					const sharp =
+						sharpFromSidecar?.default || sharpFromSidecar || null;
+					if (typeof sharp === "function") {
+						return sharp;
+					}
+				} catch {
+					return null;
+				}
+				return null;
+			}
+			try {
+				const mod = await import("sharp");
+				const sharp = mod?.default || mod;
+				return typeof sharp === "function" ? sharp : null;
+			} catch {
+				return null;
+			}
+		})();
+	}
+	return imageSharpPromise;
+};
+
+const loadImageBufferForNormalization = async (source = null) => {
 	if (Buffer.isBuffer(source)) {
 		return source;
 	}
@@ -657,25 +719,135 @@ const loadNewsletterImageBuffer = async (source = null) => {
 	if (!/^https?:\/\//i.test(sourceUrl)) {
 		return null;
 	}
-	const response = await fetch(sourceUrl);
-	if (!response.ok) {
-		throw new Error(`HTTP ${response.status}`);
+	const result = await utils.requests.fetchPublicBuffer(sourceUrl, {
+		maxBytes: NEWSLETTER_IMAGE_NORMALIZATION_MAX_BYTES,
+		accept: "image/*,*/*;q=0.8",
+	});
+	return result?.buffer || null;
+};
+
+const buildDocumentFallbackContent = ({
+	attachment,
+	content,
+	sourceMime = "",
+	documentSource = null,
+} = {}) => {
+	const fallbackSource = documentSource || content?.image || content?.document;
+	if (!fallbackSource) {
+		return content;
 	}
-	const contentLength = Number.parseInt(
-		response.headers.get("content-length") || "",
-		10,
-	);
-	if (
-		Number.isFinite(contentLength) &&
-		contentLength > NEWSLETTER_IMAGE_NORMALIZATION_MAX_BYTES
-	) {
-		throw new Error(`content_length_exceeded:${contentLength}`);
+	return {
+		document: fallbackSource,
+		mimetype:
+			sourceMime ||
+			normalizeMimeType(content?.mimetype) ||
+			"application/octet-stream",
+		fileName:
+			attachment?.name ||
+			(typeof content?.fileName === "string" && content.fileName.trim()
+				? content.fileName.trim()
+				: "attachment"),
+	};
+};
+
+const chooseNormalizedStaticImageMimeType = ({
+	sourceMime = "",
+	hasAlpha = false,
+} = {}) =>
+	hasAlpha || WHATSAPP_PREFER_PNG_NORMALIZATION_MIME_TYPES.has(sourceMime)
+		? "image/png"
+		: "image/jpeg";
+
+const buildNormalizedImageContent = ({
+	content,
+	outboundBuffer,
+	outboundMime,
+	width = null,
+	height = null,
+} = {}) => {
+	const normalizedContent = {
+		...content,
+		image: outboundBuffer,
+		mimetype: outboundMime,
+	};
+	if (width) {
+		normalizedContent.width = width;
+	} else {
+		delete normalizedContent.width;
 	}
-	const buffer = Buffer.from(await response.arrayBuffer());
-	if (buffer.length > NEWSLETTER_IMAGE_NORMALIZATION_MAX_BYTES) {
-		throw new Error(`buffer_length_exceeded:${buffer.length}`);
+	if (height) {
+		normalizedContent.height = height;
+	} else {
+		delete normalizedContent.height;
 	}
-	return buffer;
+	return normalizedContent;
+};
+
+const normalizeImageBufferWithSharp = async ({
+	sourceBuffer,
+	sourceMime,
+} = {}) => {
+	const sharp = await getImageSharp();
+	if (!sharp) {
+		return null;
+	}
+	const image = sharp(sourceBuffer, { animated: true });
+	const metadata = await image.metadata();
+	const width = toIntegerOrNull(metadata?.width);
+	const height = toIntegerOrNull(metadata?.height);
+	const frameCount = toIntegerOrNull(metadata?.pages) || 1;
+	if (frameCount > 1) {
+		return {
+			decoder: "sharp",
+			animated: true,
+			width,
+			height,
+		};
+	}
+	const outboundMime = chooseNormalizedStaticImageMimeType({
+		sourceMime,
+		hasAlpha: metadata?.hasAlpha === true,
+	});
+	const outboundBuffer =
+		outboundMime === "image/jpeg"
+			? await image.rotate().jpeg({ quality: 82 }).toBuffer()
+			: await image.rotate().png().toBuffer();
+	return {
+		decoder: "sharp",
+		animated: false,
+		outboundBuffer,
+		outboundMime,
+		width,
+		height,
+	};
+};
+
+const normalizeImageBufferWithJimp = async ({
+	sourceBuffer,
+	sourceMime,
+} = {}) => {
+	const jimp = await getNewsletterImageJimp();
+	if (!jimp) {
+		return null;
+	}
+	const image = await jimp.Jimp.read(sourceBuffer);
+	const width = toIntegerOrNull(image?.bitmap?.width);
+	const height = toIntegerOrNull(image?.bitmap?.height);
+	const outboundMime = chooseNormalizedStaticImageMimeType({
+		sourceMime,
+	});
+	const outboundBuffer =
+		outboundMime === "image/jpeg"
+			? await image.getBuffer("image/jpeg", { quality: 82 })
+			: await image.getBuffer("image/png");
+	return {
+		decoder: "jimp",
+		animated: false,
+		outboundBuffer,
+		outboundMime,
+		width,
+		height,
+	};
 };
 
 const normalizeNewsletterImageSendContent = async ({
@@ -690,7 +862,7 @@ const normalizeNewsletterImageSendContent = async ({
 	const shouldForceJpeg =
 		!NEWSLETTER_IMAGE_JPEG_MIME_TYPES.has(normalizedSourceMime);
 	try {
-		const sourceBuffer = await loadNewsletterImageBuffer(content?.image);
+		const sourceBuffer = await loadImageBufferForNormalization(content?.image);
 		if (!sourceBuffer?.length) {
 			return content;
 		}
@@ -766,6 +938,130 @@ const normalizeNewsletterImageSendContent = async ({
 			"Failed to normalize newsletter image attachment",
 		);
 		return content;
+	}
+};
+
+const normalizeRegularImageSendContentForWhatsApp = async ({
+	attachment,
+	content,
+	jid,
+	discordMessageId,
+} = {}) => {
+	if (isNewsletterJid(jid) || !content?.image) {
+		return content;
+	}
+	const normalizedSourceMime = normalizeMimeType(content?.mimetype);
+	if (
+		!normalizedSourceMime.startsWith("image/") ||
+		WHATSAPP_SAFE_IMAGE_MIME_TYPES.has(normalizedSourceMime) ||
+		WHATSAPP_PRESERVE_SOURCE_IMAGE_MIME_TYPES.has(normalizedSourceMime)
+	) {
+		return content;
+	}
+	const fallbackToDocument = (documentSource = null) =>
+		buildDocumentFallbackContent({
+			attachment,
+			content,
+			sourceMime: normalizedSourceMime,
+			documentSource,
+		});
+	try {
+		const sourceBuffer = await loadImageBufferForNormalization(content?.image);
+		if (!sourceBuffer?.length) {
+			state.logger?.debug?.(
+				{
+					jid,
+					discordMessageId: normalizeBridgeMessageId(discordMessageId),
+					sourceMime: normalizedSourceMime || null,
+				},
+				"Could not load unsupported Discord image for normalization; falling back to document send",
+			);
+			return fallbackToDocument();
+		}
+
+		for (const normalizeBuffer of [
+			normalizeImageBufferWithSharp,
+			normalizeImageBufferWithJimp,
+		]) {
+			try {
+				const normalizedResult = await normalizeBuffer({
+					sourceBuffer,
+					sourceMime: normalizedSourceMime,
+				});
+				if (!normalizedResult) {
+					continue;
+				}
+				if (normalizedResult.animated) {
+					state.logger?.debug?.(
+						{
+							jid,
+							discordMessageId: normalizeBridgeMessageId(discordMessageId),
+							sourceMime: normalizedSourceMime || null,
+							sourceBytes: sourceBuffer.length,
+							decoder: normalizedResult.decoder,
+						},
+						"Unsupported animated Discord image cannot be safely flattened; falling back to document send",
+					);
+					return fallbackToDocument(sourceBuffer);
+				}
+				if (!normalizedResult.outboundBuffer?.length) {
+					continue;
+				}
+				state.logger?.debug?.(
+					{
+						jid,
+						discordMessageId: normalizeBridgeMessageId(discordMessageId),
+						sourceMime: normalizedSourceMime || null,
+						sourceBytes: sourceBuffer.length,
+						outboundBytes: normalizedResult.outboundBuffer.length,
+						outboundMime: normalizedResult.outboundMime,
+						width: normalizedResult.width,
+						height: normalizedResult.height,
+						decoder: normalizedResult.decoder,
+					},
+					"Normalized Discord image attachment before WhatsApp send",
+				);
+				return buildNormalizedImageContent({
+					content,
+					outboundBuffer: normalizedResult.outboundBuffer,
+					outboundMime: normalizedResult.outboundMime,
+					width: normalizedResult.width,
+					height: normalizedResult.height,
+				});
+			} catch (err) {
+				state.logger?.debug?.(
+					{
+						err,
+						jid,
+						discordMessageId: normalizeBridgeMessageId(discordMessageId),
+						sourceMime: normalizedSourceMime || null,
+					},
+					"Failed to decode unsupported Discord image with normalizer",
+				);
+			}
+		}
+
+		state.logger?.debug?.(
+			{
+				jid,
+				discordMessageId: normalizeBridgeMessageId(discordMessageId),
+				sourceMime: normalizedSourceMime || null,
+				sourceBytes: sourceBuffer.length,
+			},
+			"No supported decoder was available for unsupported Discord image; falling back to document send",
+		);
+		return fallbackToDocument(sourceBuffer);
+	} catch (err) {
+		state.logger?.debug?.(
+			{
+				err,
+				jid,
+				discordMessageId: normalizeBridgeMessageId(discordMessageId),
+				sourceMime: normalizedSourceMime || null,
+			},
+			"Failed to pre-normalize Discord image attachment",
+		);
+		return fallbackToDocument();
 	}
 };
 
@@ -3609,6 +3905,12 @@ const connectToWhatsApp = async (retry = 1) => {
 				let doc = utils.whatsapp.createDocumentContent(preparedFile);
 				if (!doc) continue;
 				doc = await normalizeAudioSendContentForWhatsApp({
+					attachment: preparedFile,
+					content: doc,
+					jid: targetJid,
+					discordMessageId: message?.id,
+				});
+				doc = await normalizeRegularImageSendContentForWhatsApp({
 					attachment: preparedFile,
 					content: doc,
 					jid: targetJid,

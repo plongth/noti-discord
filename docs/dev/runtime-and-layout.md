@@ -27,6 +27,7 @@ Primary flow:
 - Bundle for Node smoke: `npm run bundle`
 - Bundle for pkg: `npm run bundle:pkg`
 - Build local binary: `npm run build:bin`
+  packaged output includes the executable plus `build/runtime/` for native sidecar modules
 
 Smoke startup without external connections:
 

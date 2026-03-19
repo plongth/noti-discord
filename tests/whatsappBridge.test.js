@@ -1587,6 +1587,131 @@ test("Regular Discord audio attachments are not forced into ptt mode", async () 
 	}
 });
 
+test("Unsupported Discord static WebP attachments are normalized before WhatsApp send", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		const sharpMod = await import("sharp");
+		const sharp = sharpMod?.default || sharpMod;
+		const webpBytes = await sharp({
+			create: {
+				width: 2,
+				height: 2,
+				channels: 4,
+				background: { r: 255, g: 0, b: 0, alpha: 0.5 },
+			},
+		})
+			.webp()
+			.toBuffer();
+		const attachmentUrl = `data:image/webp;base64,${webpBytes.toString("base64")}`;
+
+		utils.whatsapp.createDocumentContent = (attachment) => ({
+			image: { url: attachment.url },
+			mimetype: attachment.contentType,
+		});
+
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "120363123456789@s.whatsapp.net",
+			forwardContext: null,
+			message: {
+				id: "dc-static-webp",
+				content: "",
+				cleanContent: "",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map([
+					[
+						"attachment-1",
+						{
+							id: "attachment-1",
+							url: attachmentUrl,
+							name: "paste.webp",
+							contentType: "image/webp",
+						},
+					],
+				]),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
+
+		const sent = await waitFor(() => harness.fakeClient.sendCalls.length === 1, {
+			timeoutMs: 1500,
+		});
+
+		assert.equal(sent, true);
+		const sentContent = harness.fakeClient.sendCalls[0]?.content || {};
+		assert.ok(Buffer.isBuffer(sentContent.image));
+		assert.equal(sentContent.mimetype, "image/png");
+		assert.equal(sentContent.document, undefined);
+		assert.equal(sentContent.width, 2);
+		assert.equal(sentContent.height, 2);
+	} finally {
+		harness.cleanup();
+	}
+});
+
+test("Unsupported Discord image attachments fall back to document sends when normalization loading fails", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	const originalFetchPublicBuffer = utils.requests.fetchPublicBuffer;
+	try {
+		utils.requests.fetchPublicBuffer = async () => {
+			throw new Error("HTTP 503");
+		};
+		utils.whatsapp.createDocumentContent = (attachment) => ({
+			image: { url: attachment.url },
+			mimetype: attachment.contentType,
+		});
+
+		const unsupportedImageUrl =
+			"https://cdn.discordapp.com/attachments/123/456/upload.webp";
+
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "120363123456789@s.whatsapp.net",
+			forwardContext: null,
+			message: {
+				id: "dc-unsupported-image-fetch-fail",
+				content: "",
+				cleanContent: "",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map([
+					[
+						"attachment-1",
+						{
+							id: "attachment-1",
+							url: unsupportedImageUrl,
+							name: "upload.webp",
+							contentType: "image/webp",
+						},
+					],
+				]),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
+
+		const sent = await waitFor(() => harness.fakeClient.sendCalls.length === 1, {
+			timeoutMs: 1500,
+		});
+
+		assert.equal(sent, true);
+		const sentContent = harness.fakeClient.sendCalls[0]?.content || {};
+		assert.deepEqual(sentContent.document, { url: unsupportedImageUrl });
+		assert.equal(sentContent.mimetype, "image/webp");
+		assert.equal(sentContent.fileName, "upload.webp");
+		assert.equal(sentContent.image, undefined);
+	} finally {
+		utils.requests.fetchPublicBuffer = originalFetchPublicBuffer;
+		harness.cleanup();
+	}
+});
+
 test("Discord replies warn with interpolated message storage size when quoted message is missing", async () => {
 	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
 	const originalLimit = state.settings.lastMessageStorage;

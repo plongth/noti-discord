@@ -35,7 +35,7 @@ const {
 
 const DOWNLOAD_TOKEN_VERSION = 1;
 const CUSTOM_EMOJI_REGEX = /<(a?):([a-zA-Z0-9_]{1,32}):(\d+)>/g;
-const GIF_URL_EXTENSION_REGEX = /\.(gif|mp4|webm)$/i;
+const GIF_URL_EXTENSION_REGEX = /\.(gif|mp4|webm)(?:[?#]|$)/i;
 const GIF_PROVIDER_HINTS = ["tenor", "giphy", "imgur", "gyazo"];
 const isKnownGifProvider = (value = "") =>
 	GIF_PROVIDER_HINTS.some((hint) => value.includes(hint));
@@ -662,6 +662,9 @@ const guessExtensionFromUrl = (url = "") => {
 const extensionToMime = (ext = "") =>
 	MIME_BY_EXTENSION[ext] || "application/octet-stream";
 
+const normalizeAttachmentMimeType = (value = "") =>
+	typeof value === "string" ? value.split(";")[0].trim().toLowerCase() : "";
+
 const isSupportedGifUrl = (url = "") => GIF_URL_EXTENSION_REGEX.test(url);
 const resolveEmbedList = (input = null) => {
 	const embeds = Array.isArray(input) ? input : input?.embeds;
@@ -767,6 +770,73 @@ const normalizeAttachmentUrlForDedupe = (value = "") => {
 	} catch {
 		return trimmed;
 	}
+};
+
+const normalizeDiscordUploadedMediaKey = (value = "") => {
+	if (typeof value !== "string" || !value.trim()) return "";
+	try {
+		const parsed = new URL(value);
+		let host = normalizeHostname(parsed.hostname);
+		if (host === "media.discordapp.net") {
+			host = "cdn.discordapp.com";
+		}
+		if (host !== "cdn.discordapp.com") {
+			return "";
+		}
+		const parts = parsed.pathname.split("/").filter(Boolean);
+		if (parts[0] !== "attachments" || parts.length < 4) {
+			return "";
+		}
+		const fileName = parts[parts.length - 1] || "";
+		const stem = fileName.replace(/\.[^.]+$/u, "").toLowerCase();
+		if (!stem) {
+			return "";
+		}
+		return `${host}/${parts.slice(0, -1).join("/")}/${stem}`;
+	} catch {
+		return "";
+	}
+};
+
+const isGifLikeAttachment = (attachment = {}) => {
+	const contentType = normalizeAttachmentMimeType(
+		attachment?.contentType || attachment?.content_type,
+	);
+	if (contentType === "image/gif") {
+		return true;
+	}
+	const fileName =
+		typeof attachment?.name === "string" ? attachment.name.trim() : "";
+	if (/\.gif$/iu.test(fileName)) {
+		return true;
+	}
+	return guessExtensionFromUrl(attachment?.url) === "gif";
+};
+
+const isVideoLikeAttachment = (attachment = {}) =>
+	normalizeAttachmentMimeType(
+		attachment?.contentType || attachment?.content_type,
+	).startsWith("video/");
+
+const shouldPreferGifEmbedAttachment = (attachment = {}, gifEmbedEntry = {}) => {
+	if (
+		!isGifLikeAttachment(attachment) ||
+		!isVideoLikeAttachment(gifEmbedEntry?.attachment)
+	) {
+		return false;
+	}
+	const attachmentUrl = normalizeAttachmentUrlForDedupe(attachment?.url);
+	const embedShareUrl = normalizeAttachmentUrlForDedupe(
+		gifEmbedEntry?.shareUrl || gifEmbedEntry?.sourceUrl,
+	);
+	if (attachmentUrl && embedShareUrl && attachmentUrl === embedShareUrl) {
+		return true;
+	}
+	const attachmentKey = normalizeDiscordUploadedMediaKey(attachment?.url);
+	const embedKey = normalizeDiscordUploadedMediaKey(
+		gifEmbedEntry?.attachment?.url,
+	);
+	return Boolean(attachmentKey && embedKey && attachmentKey === embedKey);
 };
 
 const getAttachmentDedupeKey = (attachment, fallbackIndex = 0) => {
@@ -2083,13 +2153,18 @@ const discord = {
 			const shouldConsumeUrl =
 				isKnownGifProvider(shareCandidate) ||
 				isKnownGifProvider(providerCandidate);
+			const contentType = extensionToMime(extension);
 			attachments.push({
 				attachment: {
 					url: mediaUrl,
 					name: `${sanitizeFileName(baseName, "discord-gif")}.${extension}`,
-					contentType: extensionToMime(extension),
+					contentType,
+					...(contentType.startsWith("video/")
+						? { gifPlayback: true }
+						: {}),
 				},
 				sourceUrl: shouldConsumeUrl ? embed?.url : null,
+				shareUrl: typeof embed?.url === "string" ? embed.url : null,
 			});
 		}
 		return attachments;
@@ -2149,6 +2224,12 @@ const discord = {
 			: [];
 		const stickerAttachments = this.collectStickerAttachments(message);
 		const gifEmbeds = this.extractGifEmbedAttachments(message);
+		const filteredBaseAttachments = baseAttachments.filter(
+			(attachment) =>
+				!gifEmbeds.some((entry) =>
+					shouldPreferGifEmbedAttachment(attachment, entry),
+				),
+		);
 		const embedAttachments = includeEmbedAttachments
 			? this.extractEmbedMediaAttachments(message)
 			: [];
@@ -2159,7 +2240,7 @@ const discord = {
 			.map((entry) => entry.sourceUrl)
 			.filter(Boolean);
 		const combined = this.mergeCollectedAttachments(
-			baseAttachments,
+			filteredBaseAttachments,
 			stickerAttachments,
 			gifEmbeds.map((entry) => entry.attachment),
 			embedAttachments,
@@ -4464,6 +4545,9 @@ const whatsapp = {
 		if (contentType === "document") {
 			documentContent.fileName = attachment.name;
 		}
+		if (contentType === "video" && attachment.gifPlayback) {
+			documentContent.gifPlayback = true;
+		}
 		if (attachment.name.toLowerCase().endsWith(".ogg")) {
 			documentContent.ptt = true;
 		}
@@ -4596,6 +4680,10 @@ const requests = {
 			});
 	},
 
+	async fetchPublicBuffer(url, options) {
+		return fetchPreviewBuffer(url, options);
+	},
+
 	async downloadFile(path, url, options) {
 		const readable = await fetch(url, options)
 			.then((resp) => resp.body)
@@ -4632,6 +4720,7 @@ const ui = {
 const utils = {
 	updater,
 	discord,
+	requests,
 	whatsapp,
 	sqliteToJson,
 	ensureDownloadServer,
