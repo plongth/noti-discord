@@ -5,6 +5,12 @@ import os from "node:os";
 import path from "node:path";
 
 const require = createRequire(import.meta.url);
+const RUNTIME_SIDECAR_DEPENDENCIES = [
+	"sharp",
+	"canvas",
+	"jsdom",
+	"lottie-web",
+];
 
 function platformToPkgOs(platform) {
 	if (platform === "win32") return "win";
@@ -61,17 +67,20 @@ function buildOutputPath(pkgOs, pkgArch) {
 	throw new Error(`Unsupported pkg OS: ${pkgOs}`);
 }
 
-function getSharpVersion() {
-	try {
-		return require("sharp/package.json").version;
-	} catch (err) {
-		throw new Error(
-			`Unable to resolve sharp for packaged runtime sidecar: ${err?.message || err}`,
-		);
-	}
+function getRuntimeSidecarPackageSpecs() {
+	return RUNTIME_SIDECAR_DEPENDENCIES.map((packageName) => {
+		try {
+			const packageJson = require(`${packageName}/package.json`);
+			return `${packageName}@${packageJson.version}`;
+		} catch (err) {
+			throw new Error(
+				`Unable to resolve ${packageName} for packaged runtime sidecar: ${err?.message || err}`,
+			);
+		}
+	});
 }
 
-function prepareSharpRuntimeSidecar(runtimeDir, sharpVersion) {
+function prepareRuntimeSidecar(runtimeDir, packageSpecs) {
 	fs.rmSync(runtimeDir, { recursive: true, force: true });
 	fs.mkdirSync(runtimeDir, { recursive: true });
 	fs.writeFileSync(
@@ -88,14 +97,14 @@ function prepareSharpRuntimeSidecar(runtimeDir, sharpVersion) {
 	run(
 		getBin("npm"),
 		[
-			"install",
-			"--omit=dev",
-			"--no-package-lock",
-			"--no-save",
-			`sharp@${sharpVersion}`,
-		],
-		{ cwd: runtimeDir },
-	);
+				"install",
+				"--omit=dev",
+				"--no-package-lock",
+				"--no-save",
+				...packageSpecs,
+			],
+			{ cwd: runtimeDir },
+		);
 }
 
 const args = new Set(process.argv.slice(2));
@@ -113,7 +122,7 @@ const target = `node${nodeMajor}-${pkgOs}-${pkgArch}`;
 const outputPath = buildOutputPath(pkgOs, pkgArch);
 const resolvedOutputPath = path.resolve(outputPath);
 const runtimeSidecarDir = path.resolve(path.join("build", "runtime"));
-const sharpVersion = getSharpVersion();
+const runtimeSidecarPackageSpecs = getRuntimeSidecarPackageSpecs();
 
 run(getBin("npm"), ["run", "bundle:pkg"]);
 
@@ -134,7 +143,7 @@ const pkgArgs = [
 ];
 
 run(getBin("npx"), pkgArgs);
-prepareSharpRuntimeSidecar(runtimeSidecarDir, sharpVersion);
+prepareRuntimeSidecar(runtimeSidecarDir, runtimeSidecarPackageSpecs);
 
 if (shouldSmokeTest) {
 	const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "wa2dc-pkg-smoke-"));

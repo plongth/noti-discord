@@ -6,8 +6,12 @@ import path from "node:path";
 import * as tar from "tar";
 
 const require = createRequire(import.meta.url);
-
-const sharpVersion = require("sharp/package.json").version;
+const RUNTIME_SIDECAR_DEPENDENCIES = [
+	"sharp",
+	"canvas",
+	"jsdom",
+	"lottie-web",
+];
 
 const parseArgs = (argv = []) => {
 	const parsed = {};
@@ -41,6 +45,18 @@ const run = (command, args, options = {}) => {
 
 const getBin = (name) => (process.platform === "win32" ? `${name}.cmd` : name);
 
+const getRuntimeSidecarPackageSpecs = () =>
+	RUNTIME_SIDECAR_DEPENDENCIES.map((packageName) => {
+		try {
+			const packageJson = require(`${packageName}/package.json`);
+			return `${packageName}@${packageJson.version}`;
+		} catch (err) {
+			throw new Error(
+				`Unable to resolve ${packageName} for packaged runtime sidecar: ${err?.message || err}`,
+			);
+		}
+	});
+
 const main = async () => {
 	const args = parseArgs(process.argv.slice(2));
 	const outputPath = args.output ? path.resolve(args.output) : null;
@@ -55,6 +71,7 @@ const main = async () => {
 		path.join(os.tmpdir(), "wa2dc-runtime-archive-"),
 	);
 	const runtimeDir = path.join(tempRoot, "runtime");
+	const packageSpecs = getRuntimeSidecarPackageSpecs();
 
 	try {
 		fs.mkdirSync(runtimeDir, { recursive: true });
@@ -75,7 +92,7 @@ const main = async () => {
 			"--omit=dev",
 			"--no-package-lock",
 			"--no-save",
-			`sharp@${sharpVersion}`,
+			...packageSpecs,
 		];
 		if (targetOs) installArgs.push(`--os=${targetOs}`);
 		if (targetCpu) installArgs.push(`--cpu=${targetCpu}`);

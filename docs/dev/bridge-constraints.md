@@ -37,7 +37,7 @@ Respect transport constraints when emitting output:
 - when a Discord message contains multiple album-eligible image/video attachments for a normal WhatsApp chat, prefer relaying them as a WhatsApp media album instead of separate standalone sends; keep mixed/unsupported attachment sets on the sequential fallback path
 - do not flatten or duplicate animated Discord media just to satisfy static image normalization paths; when Discord exposes both a GIF file entry and its preview video for the same upload, prefer a single animated send candidate
 - when Discord GIF providers (for example Tenor/Giphy) expose extensionless video URLs plus static preview thumbnails, infer the animated video send from the provider embed and suppress the duplicate preview image
-- prefer the sticker asset URL exposed by Discord over reconstructing sticker CDN/proxy URLs locally; animated sticker formats may require different extensions than the static fallback path
+- prefer the sticker asset URL exposed by Discord over reconstructing sticker CDN/proxy URLs locally; convert Discord sticker assets into WhatsApp sticker payloads when possible, including animated Lottie stickers via the dedicated renderer path
 
 ## Routing gates
 

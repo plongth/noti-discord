@@ -19,6 +19,7 @@ import groupMetadataCache from "./groupMetadataCache.js";
 import { createGroupRefreshScheduler } from "./groupMetadataRefresh.js";
 import { getImageJimp, getImageSharp } from "./imageLibs.js";
 import { createAudioSendContentNormalizer } from "./internal/audioSendNormalization.js";
+import { createStickerSendContentNormalizer } from "./internal/stickerSendNormalization.js";
 import messageStore from "./messageStore.js";
 import {
 	clearPendingNewsletterSends,
@@ -133,6 +134,12 @@ const normalizeAudioSendContentForWhatsApp = createAudioSendContentNormalizer({
 	getLogger: () => state.logger,
 	normalizeBridgeMessageId,
 	toBuffer,
+});
+const normalizeStickerSendContentForWhatsApp = createStickerSendContentNormalizer({
+	getLogger: () => state.logger,
+	normalizeBridgeMessageId,
+	getImageSharp,
+	fetchBuffer: (...args) => utils.requests.fetchPublicBuffer(...args),
 });
 
 const selectPnJid = (list = []) =>
@@ -624,6 +631,9 @@ const normalizeAttachmentForWhatsAppSend = (attachment = {}) => {
 
 const isNewsletterSupportedMediaAttachment = (attachment = {}) => {
 	const normalized = normalizeAttachmentForWhatsAppSend(attachment);
+	if (normalized?.isSticker) {
+		return false;
+	}
 	const mimetype = normalizeMimeType(normalized.contentType);
 	const majorType = mimetype.split("/")[0];
 	return majorType === "image" || majorType === "video";
@@ -4202,40 +4212,49 @@ const connectToWhatsApp = async (retry = 1) => {
 			return { sentMessage, ackErrorCode };
 		};
 
-		if (state.settings.UploadAttachments && attachmentsToSend.length > 0) {
-			const preparedAttachments = [];
-			for (const file of attachmentsToSend) {
-				const preparedFile = normalizeAttachmentForWhatsAppSend(file);
-				let doc = utils.whatsapp.createDocumentContent(preparedFile);
-				if (!doc) continue;
-				doc = await normalizeAudioSendContentForWhatsApp({
-					attachment: preparedFile,
-					content: doc,
-					jid: targetJid,
-					discordMessageId: message?.id,
-				});
-				doc = await normalizeRegularImageSendContentForWhatsApp({
-					attachment: preparedFile,
-					content: doc,
-					jid: targetJid,
-					discordMessageId: message?.id,
-				});
-				doc = await ensureImageThumbForWhatsAppSend({
-					content: doc,
-					jid: targetJid,
-					discordMessageId: message?.id,
-				});
-				if (newsletterChat) {
-					doc = await normalizeNewsletterImageSendContent({
-						content: doc,
+			if (state.settings.UploadAttachments && attachmentsToSend.length > 0) {
+				const preparedAttachments = [];
+				for (const file of attachmentsToSend) {
+					const preparedFile = normalizeAttachmentForWhatsAppSend(file);
+					let doc = await normalizeStickerSendContentForWhatsApp({
+						attachment: preparedFile,
 						jid: targetJid,
 						discordMessageId: message?.id,
 					});
-				}
-				preparedAttachments.push({
-					attachment: preparedFile,
-					content: doc,
-				});
+					if (!doc) {
+						doc = utils.whatsapp.createDocumentContent(preparedFile);
+					}
+					if (!doc) continue;
+					if (!doc.sticker) {
+						doc = await normalizeAudioSendContentForWhatsApp({
+							attachment: preparedFile,
+							content: doc,
+							jid: targetJid,
+							discordMessageId: message?.id,
+						});
+						doc = await normalizeRegularImageSendContentForWhatsApp({
+							attachment: preparedFile,
+							content: doc,
+							jid: targetJid,
+							discordMessageId: message?.id,
+						});
+						doc = await ensureImageThumbForWhatsAppSend({
+							content: doc,
+							jid: targetJid,
+							discordMessageId: message?.id,
+						});
+						if (newsletterChat) {
+							doc = await normalizeNewsletterImageSendContent({
+								content: doc,
+								jid: targetJid,
+								discordMessageId: message?.id,
+							});
+						}
+					}
+					preparedAttachments.push({
+						attachment: preparedFile,
+						content: doc,
+					});
 			}
 
 			const attachmentCaptionText = await buildAttachmentCaptionText({
@@ -4252,11 +4271,11 @@ const connectToWhatsApp = async (retry = 1) => {
 			const albumEligibleAttachments = preparedAttachments.filter(({ content }) =>
 				Boolean(getAlbumEligibleMediaKind(content)),
 			);
-			const canUseMediaAlbum =
-				!newsletterChat &&
-				!isBroadcastJid(targetJid) &&
-				preparedAttachments.length >= 2 &&
-				albumEligibleAttachments.length === preparedAttachments.length;
+				const canUseMediaAlbum =
+					!newsletterChat &&
+					!isBroadcastJid(targetJid) &&
+					preparedAttachments.length >= 2 &&
+					albumEligibleAttachments.length === preparedAttachments.length;
 			if (canUseMediaAlbum) {
 				let sentAnyAlbum = false;
 				for (const [batchIndex, batch] of chunkList(
@@ -4307,30 +4326,58 @@ const connectToWhatsApp = async (retry = 1) => {
 					}
 					sentAnyAlbum = true;
 				}
-				if (sentAnyAlbum) {
-					return;
-				}
-			}
-
-			let first = true;
-			let sentAnyAttachment = false;
-			let attemptedAttachmentSends = 0;
-			for (const { attachment: preparedFile, content: doc } of preparedAttachments) {
-				attemptedAttachmentSends += 1;
-				if (first) {
-					if (attachmentCaptionText || mentionJids.length) {
-						doc.caption = attachmentCaptionText;
+					if (sentAnyAlbum) {
+						return;
 					}
-					if (!newsletterChat && mentionJids.length) doc.mentions = mentionJids;
 				}
-				try {
-					const { ackErrorCode } = await sendTrackedMessage(
-						doc,
-						first ? options : undefined,
+
+				const firstPreparedContent = preparedAttachments[0]?.content || null;
+				const firstAttachmentIsSticker = Boolean(firstPreparedContent?.sticker);
+				const sentStandaloneStickerText =
+					firstAttachmentIsSticker && Boolean(attachmentCaptionText);
+				if (sentStandaloneStickerText) {
+					const standaloneTextPayload = { text: attachmentCaptionText };
+					if (!newsletterChat && mentionJids.length) {
+						standaloneTextPayload.mentions = mentionJids;
+					}
+					await sendTrackedMessage(
+						standaloneTextPayload,
+						options,
 						{
-							ackContext: "Newsletter attachment send",
+							ackContext: "Sticker companion text send",
 							forceNewsletterAck: newsletterChat,
 						},
+					);
+				}
+
+				let first = true;
+				let sentAnyAttachment = false;
+				let attemptedAttachmentSends = 0;
+				for (const { attachment: preparedFile, content: doc } of preparedAttachments) {
+					attemptedAttachmentSends += 1;
+					if (first) {
+						if (
+							!sentStandaloneStickerText &&
+							(attachmentCaptionText || mentionJids.length)
+						) {
+							doc.caption = attachmentCaptionText;
+						}
+						if (
+							!sentStandaloneStickerText &&
+							!newsletterChat &&
+							mentionJids.length
+						) {
+							doc.mentions = mentionJids;
+						}
+					}
+					try {
+						const { ackErrorCode } = await sendTrackedMessage(
+							doc,
+							first && !sentStandaloneStickerText ? options : undefined,
+							{
+								ackContext: "Newsletter attachment send",
+								forceNewsletterAck: newsletterChat,
+							},
 					);
 					if (!ackErrorCode) {
 						sentAnyAttachment = true;

@@ -12,7 +12,7 @@ Originally created by [Fatih Kilic](https://github.com/FKLC), now maintained by 
 
 ## Features
 
-- Supports media (Image, Video, Audio, Document, Stickers) and reactions!
+- Supports media (Image, Video, Audio, Document, Stickers), including Discord sticker conversion for WhatsApp, and reactions!
 - Allows whitelisting, so you can choose what to see on Discord
 - Translates mentions between WhatsApp and Discord
 - Allows usage of WhatsApp through the Discord overlay

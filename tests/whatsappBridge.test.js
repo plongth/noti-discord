@@ -1607,6 +1607,70 @@ test("Regular Discord audio attachments are not forced into ptt mode", async () 
 	}
 });
 
+test("Discord static stickers are sent to WhatsApp as sticker payloads", async () => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		const sharpMod = await import("sharp");
+		const sharp = sharpMod?.default || sharpMod;
+		const pngBytes = await sharp({
+			create: {
+				width: 16,
+				height: 16,
+				channels: 4,
+				background: { r: 255, g: 180, b: 0, alpha: 1 },
+			},
+		})
+			.png()
+			.toBuffer();
+
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "120363123456789@s.whatsapp.net",
+			forwardContext: null,
+			message: {
+				id: "dc-static-sticker",
+				content: "",
+				cleanContent: "",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map(),
+				stickers: new Map([
+					[
+						"sticker-1",
+						{
+							id: "sticker-1",
+							name: "wave",
+							format: 1,
+							url: `data:image/png;base64,${pngBytes.toString("base64")}`,
+						},
+					],
+				]),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
+
+		const sent = await waitFor(
+			() => harness.fakeClient.sendCalls.length === 1,
+			{
+				timeoutMs: 1500,
+			},
+		);
+
+		assert.equal(sent, true);
+		const sentContent = harness.fakeClient.sendCalls[0]?.content || {};
+		assert.ok(Buffer.isBuffer(sentContent.sticker));
+		assert.equal(sentContent.mimetype, "image/webp");
+		assert.equal(sentContent.isAnimated, false);
+		assert.equal(sentContent.width, 512);
+		assert.equal(sentContent.height, 512);
+		assert.equal(sentContent.document, undefined);
+	} finally {
+		harness.cleanup();
+	}
+});
+
 test("Unsupported Discord static WebP attachments are normalized before WhatsApp send", async () => {
 	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
 	try {

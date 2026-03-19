@@ -27,7 +27,7 @@ Primary flow:
 - Bundle for Node smoke: `npm run bundle`
 - Bundle for pkg: `npm run bundle:pkg`
 - Build local binary: `npm run build:bin`
-  packaged output includes the executable plus `build/runtime/` for native sidecar modules
+  packaged output includes the executable plus `build/runtime/` for runtime sidecar modules such as `sharp`, `canvas`, `jsdom`, and `lottie-web`
   release automation also publishes a signed `${binary}.runtime.tar.gz` archive so packaged self-update can replace the sidecar automatically
   packaged startup will also try to bootstrap `runtime/` from the matching signed release asset when the sidecar is missing or unusable
 

@@ -37,6 +37,8 @@ WA2DC now normalizes static unsupported Discord image formats such as pasted Web
 
 GIF uploads prefer Discord's animated video rendition when Discord exposes both a file entry and a preview embed for the same media, so the same GIF should not be mirrored twice.
 
+Discord stickers are now mirrored as real WhatsApp stickers when possible. Static and animated Discord stickers are converted to WhatsApp-safe WebP sticker payloads by the bridge runtime.
+
 ## Can I bridge WhatsApp calls to Discord?
 No. The WhatsApp Web protocol used by the bot does not expose the real-time audio or video streams of a call. Incoming and missed calls are only sent as notifications to Discord, so the bot cannot relay or receive live WhatsApp calls.
 

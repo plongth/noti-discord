@@ -2556,12 +2556,14 @@ const discord = {
 		}
 		const url =
 			explicitUrl || `https://cdn.discordapp.com/stickers/${id}.${extension}`;
-		return {
-			url,
-			name: `${sanitizeFileName(sticker?.name || "sticker", "sticker")}-${id}.${extension}`,
-			contentType: extensionToMime(extension),
-		};
-	},
+			return {
+				url,
+				name: `${sanitizeFileName(sticker?.name || "sticker", "sticker")}-${id}.${extension}`,
+				contentType: extensionToMime(extension),
+				isSticker: true,
+				discordStickerFormat: format || null,
+			};
+		},
 	collectStickerAttachments(message) {
 		const stickers = message?.stickers;
 		if (!stickers?.size) return [];
