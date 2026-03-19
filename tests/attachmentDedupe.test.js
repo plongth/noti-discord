@@ -82,6 +82,60 @@ test("Discord GIF upload previews prefer a single animated video candidate", () 
 	assert.equal(collected.attachments[0]?.gifPlayback, true);
 });
 
+test("Discord provider GIF embeds infer mp4 media when the video URL has no extension", () => {
+	const collected = utils.discord.collectMessageMedia({
+		content: "https://tenor.com/view/ouch-gif-12136515515962044163",
+		attachments: new Map(),
+		stickers: new Map(),
+		embeds: [
+			{
+				title: "Ouch",
+				url: "https://tenor.com/view/ouch-gif-12136515515962044163",
+				provider: { name: "Tenor" },
+				video: {
+					url: "https://media.tenor.com/abc123/tenor",
+				},
+			},
+		],
+	});
+
+	assert.equal(collected.attachments.length, 1);
+	assert.equal(collected.attachments[0]?.url, "https://media.tenor.com/abc123/tenor");
+	assert.equal(collected.attachments[0]?.contentType, "video/mp4");
+	assert.equal(collected.attachments[0]?.gifPlayback, true);
+	assert.deepEqual(collected.consumedUrls, [
+		"https://tenor.com/view/ouch-gif-12136515515962044163",
+	]);
+});
+
+test("Discord GIF embeds do not add a duplicate preview image when embed mirroring is enabled", () => {
+	const collected = utils.discord.collectMessageMedia(
+		{
+			attachments: new Map(),
+			stickers: new Map(),
+			embeds: [
+				{
+					title: "Funny Cat",
+					url: "https://tenor.com/view/funny-cat-1",
+					provider: { name: "Tenor" },
+					video: {
+						url: "https://media.tenor.com/funny-cat",
+					},
+					thumbnail: {
+						url: "https://media.tenor.com/funny-cat-preview.png",
+					},
+				},
+			],
+		},
+		{ includeEmbedAttachments: true },
+	);
+
+	assert.equal(collected.attachments.length, 1);
+	assert.equal(collected.attachments[0]?.url, "https://media.tenor.com/funny-cat");
+	assert.equal(collected.attachments[0]?.contentType, "video/mp4");
+	assert.equal(collected.attachments[0]?.gifPlayback, true);
+});
+
 test("WhatsApp document content preserves gifPlayback for collected GIF videos", () => {
 	const content = utils.whatsapp.createDocumentContent({
 		url: "https://media.discordapp.net/attachments/123/456/funny-cat.mp4",

@@ -40,6 +40,17 @@ const GIF_URL_EXTENSION_REGEX = /\.(gif|mp4|webm)(?:[?#]|$)/i;
 const GIF_PROVIDER_HINTS = ["tenor", "giphy", "imgur", "gyazo"];
 const isKnownGifProvider = (value = "") =>
 	GIF_PROVIDER_HINTS.some((hint) => value.includes(hint));
+const isKnownGifProviderEmbed = (embed = {}) => {
+	const shareCandidate =
+		typeof embed?.url === "string" ? embed.url.toLowerCase() : "";
+	const providerCandidate =
+		typeof embed?.provider?.name === "string"
+			? embed.provider.name.toLowerCase()
+			: "";
+	return (
+		isKnownGifProvider(shareCandidate) || isKnownGifProvider(providerCandidate)
+	);
+};
 const UNKNOWN_DISPLAY_NAME = "Unknown";
 const SELF_DISPLAY_NAME = "You";
 const escapeRegex = (value) =>
@@ -711,6 +722,53 @@ const pickEmbedMediaCandidates = (embed = {}) =>
 		(candidate) =>
 			typeof candidate === "string" && candidate.startsWith("http"),
 	);
+
+const buildGifEmbedAttachmentEntry = (embed = {}) => {
+	const mediaUrl = pickEmbedMediaUrl(embed);
+	if (!mediaUrl) return null;
+
+	const normalizedMediaUrl = normalizeAttachmentUrlForDedupe(mediaUrl);
+	const isVideoCandidate = [
+		embed.video?.url,
+		embed.video?.proxyURL,
+		embed.video?.proxy_url,
+	]
+		.filter(
+			(candidate) =>
+				typeof candidate === "string" && candidate.startsWith("http"),
+		)
+		.some(
+			(candidate) =>
+				normalizeAttachmentUrlForDedupe(candidate) === normalizedMediaUrl,
+		);
+	const extension = guessExtensionFromUrl(mediaUrl);
+	const inferredExtension =
+		isSupportedGifUrl(mediaUrl) && extension
+			? extension
+			: isKnownGifProviderEmbed(embed) && isVideoCandidate
+				? "mp4"
+				: null;
+	if (!inferredExtension) {
+		return null;
+	}
+
+	const baseName = embed?.title || embed?.provider?.name || "discord-gif";
+	const shareCandidate = (embed?.url || "").toLowerCase();
+	const providerCandidate = (embed?.provider?.name || "").toLowerCase();
+	const shouldConsumeUrl =
+		isKnownGifProvider(shareCandidate) || isKnownGifProvider(providerCandidate);
+	const contentType = extensionToMime(inferredExtension);
+	return {
+		attachment: {
+			url: mediaUrl,
+			name: `${sanitizeFileName(baseName, "discord-gif")}.${inferredExtension}`,
+			contentType,
+			...(contentType.startsWith("video/") ? { gifPlayback: true } : {}),
+		},
+		sourceUrl: shouldConsumeUrl ? embed?.url : null,
+		shareUrl: typeof embed?.url === "string" ? embed.url : null,
+	};
+};
 
 const formatEmbedTextBlock = (embed = {}, includeUrls = true) => {
 	if (!embed || typeof embed !== "object") return "";
@@ -2153,30 +2211,7 @@ const discord = {
 	extractGifEmbedAttachments(messageOrEmbeds) {
 		const embeds = resolveEmbedList(messageOrEmbeds);
 		if (!embeds.length) return [];
-		const attachments = [];
-		for (const embed of embeds) {
-			const mediaUrl = pickEmbedMediaUrl(embed);
-			if (!mediaUrl || !isSupportedGifUrl(mediaUrl)) continue;
-			const extension = guessExtensionFromUrl(mediaUrl) || "gif";
-			const baseName = embed?.title || embed?.provider?.name || "discord-gif";
-			const shareCandidate = (embed?.url || "").toLowerCase();
-			const providerCandidate = (embed?.provider?.name || "").toLowerCase();
-			const shouldConsumeUrl =
-				isKnownGifProvider(shareCandidate) ||
-				isKnownGifProvider(providerCandidate);
-			const contentType = extensionToMime(extension);
-			attachments.push({
-				attachment: {
-					url: mediaUrl,
-					name: `${sanitizeFileName(baseName, "discord-gif")}.${extension}`,
-					contentType,
-					...(contentType.startsWith("video/") ? { gifPlayback: true } : {}),
-				},
-				sourceUrl: shouldConsumeUrl ? embed?.url : null,
-				shareUrl: typeof embed?.url === "string" ? embed.url : null,
-			});
-		}
-		return attachments;
+		return embeds.map(buildGifEmbedAttachmentEntry).filter(Boolean);
 	},
 	extractEmbedMediaAttachments(messageOrEmbeds) {
 		const embeds = resolveEmbedList(messageOrEmbeds);
@@ -2184,6 +2219,9 @@ const discord = {
 		const attachments = [];
 		const seenUrls = new Set();
 		for (const embed of embeds) {
+			if (buildGifEmbedAttachmentEntry(embed)) {
+				continue;
+			}
 			const baseName = embed?.title || embed?.provider?.name || "discord-embed";
 			for (const mediaUrl of pickEmbedMediaCandidates(embed)) {
 				const normalizedUrl = normalizeAttachmentUrlForDedupe(mediaUrl);
