@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
 import * as tar from "tar";
 

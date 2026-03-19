@@ -62,11 +62,11 @@ Both scripts support equivalent options:
 Examples:
 
 ```bash
-./install_script.sh --dir ./wa2dc --ref v2.3.0-beta.1 --start
+./install_script.sh --dir ./wa2dc --ref v2.3.0-beta.2 --start
 ```
 
 ```powershell
-.\install_script.ps1 -Dir .\wa2dc -Ref v2.3.0-beta.1 -Start
+.\install_script.ps1 -Dir .\wa2dc -Ref v2.3.0-beta.2 -Start
 ```
 
 ## Notes

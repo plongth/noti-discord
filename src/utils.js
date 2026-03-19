@@ -1918,7 +1918,9 @@ const updater = {
 			if (!runtimeSignature) {
 				throw new Error("runtime_archive_signature_missing");
 			}
-			if (!this.validateSignature(runtimeSignature.result, runtimeArchivePath)) {
+			if (
+				!this.validateSignature(runtimeSignature.result, runtimeArchivePath)
+			) {
 				throw new Error("runtime_archive_signature_invalid");
 			}
 
@@ -2093,7 +2095,9 @@ const updater = {
 				await this.revertChanges();
 				return false;
 			}
-			if (!this.validateSignature(runtimeSignature.result, runtimeArchivePath)) {
+			if (
+				!this.validateSignature(runtimeSignature.result, runtimeArchivePath)
+			) {
 				state.logger?.error(
 					"Couldn't verify the signature of the packaged runtime sidecar update, reverting back. Please update manually.",
 				);

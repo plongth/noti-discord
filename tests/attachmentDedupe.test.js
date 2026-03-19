@@ -100,7 +100,10 @@ test("Discord provider GIF embeds infer mp4 media when the video URL has no exte
 	});
 
 	assert.equal(collected.attachments.length, 1);
-	assert.equal(collected.attachments[0]?.url, "https://media.tenor.com/abc123/tenor");
+	assert.equal(
+		collected.attachments[0]?.url,
+		"https://media.tenor.com/abc123/tenor",
+	);
 	assert.equal(collected.attachments[0]?.contentType, "video/mp4");
 	assert.equal(collected.attachments[0]?.gifPlayback, true);
 	assert.deepEqual(collected.consumedUrls, [
@@ -131,7 +134,10 @@ test("Discord GIF embeds do not add a duplicate preview image when embed mirrori
 	);
 
 	assert.equal(collected.attachments.length, 1);
-	assert.equal(collected.attachments[0]?.url, "https://media.tenor.com/funny-cat");
+	assert.equal(
+		collected.attachments[0]?.url,
+		"https://media.tenor.com/funny-cat",
+	);
 	assert.equal(collected.attachments[0]?.contentType, "video/mp4");
 	assert.equal(collected.attachments[0]?.gifPlayback, true);
 });

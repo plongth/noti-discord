@@ -17,7 +17,10 @@ test("packaged updater installs the matching runtime sidecar archive", async () 
 	const stagedRuntimeRoot = await fsPromises.mkdtemp(
 		path.join(os.tmpdir(), "wa2dc-runtime-staged-"),
 	);
-	const archivePath = path.join(stagedRuntimeRoot, "WA2DC-Linux.runtime.tar.gz");
+	const archivePath = path.join(
+		stagedRuntimeRoot,
+		"WA2DC-Linux.runtime.tar.gz",
+	);
 
 	const originalUpdater = {
 		isNode: utils.updater.isNode,
@@ -25,7 +28,8 @@ test("packaged updater installs the matching runtime sidecar archive", async () 
 		downloadLatestVersion: utils.updater.downloadLatestVersion,
 		downloadSignature: utils.updater.downloadSignature,
 		downloadRuntimeArchive: utils.updater.downloadRuntimeArchive,
-		downloadRuntimeArchiveSignature: utils.updater.downloadRuntimeArchiveSignature,
+		downloadRuntimeArchiveSignature:
+			utils.updater.downloadRuntimeArchiveSignature,
 		validateSignature: utils.updater.validateSignature,
 	};
 	const defaultExeNameDescriptor = Object.getOwnPropertyDescriptor(
@@ -82,11 +86,16 @@ test("packaged updater installs the matching runtime sidecar archive", async () 
 			configurable: true,
 			get: () => "WA2DC-Linux",
 		});
-		utils.updater.downloadLatestVersion = async (_defaultExeName, targetPath) => {
+		utils.updater.downloadLatestVersion = async (
+			_defaultExeName,
+			targetPath,
+		) => {
 			await fsPromises.writeFile(targetPath, "new-binary");
 			return true;
 		};
-		utils.updater.downloadSignature = async () => ({ result: Buffer.from("sig") });
+		utils.updater.downloadSignature = async () => ({
+			result: Buffer.from("sig"),
+		});
 		utils.updater.downloadRuntimeArchive = async (
 			_defaultExeName,
 			targetPath,
@@ -124,7 +133,8 @@ test("packaged updater installs the matching runtime sidecar archive", async () 
 		);
 	} finally {
 		utils.updater.isNode = originalUpdater.isNode;
-		utils.updater.getCurrentExecutablePath = originalUpdater.getCurrentExecutablePath;
+		utils.updater.getCurrentExecutablePath =
+			originalUpdater.getCurrentExecutablePath;
 		utils.updater.downloadLatestVersion = originalUpdater.downloadLatestVersion;
 		utils.updater.downloadSignature = originalUpdater.downloadSignature;
 		utils.updater.downloadRuntimeArchive =
@@ -133,7 +143,11 @@ test("packaged updater installs the matching runtime sidecar archive", async () 
 			originalUpdater.downloadRuntimeArchiveSignature;
 		utils.updater.validateSignature = originalUpdater.validateSignature;
 		if (defaultExeNameDescriptor) {
-			Object.defineProperty(utils.updater, "defaultExeName", defaultExeNameDescriptor);
+			Object.defineProperty(
+				utils.updater,
+				"defaultExeName",
+				defaultExeNameDescriptor,
+			);
 		}
 		state.settings.KeepOldBinary = originalKeepOldBinary;
 		await fsPromises.rm(tempDir, { recursive: true, force: true });
@@ -150,7 +164,10 @@ test("packaged startup bootstraps runtime sidecar when missing", async () => {
 	const stagedRuntimeRoot = await fsPromises.mkdtemp(
 		path.join(os.tmpdir(), "wa2dc-runtime-bootstrap-staged-"),
 	);
-	const archivePath = path.join(stagedRuntimeRoot, "WA2DC-Linux.runtime.tar.gz");
+	const archivePath = path.join(
+		stagedRuntimeRoot,
+		"WA2DC-Linux.runtime.tar.gz",
+	);
 
 	const originalProcessPkgDescriptor = Object.getOwnPropertyDescriptor(
 		process,
@@ -158,7 +175,8 @@ test("packaged startup bootstraps runtime sidecar when missing", async () => {
 	);
 	const originalUpdater = {
 		downloadRuntimeArchive: utils.updater.downloadRuntimeArchive,
-		downloadRuntimeArchiveSignature: utils.updater.downloadRuntimeArchiveSignature,
+		downloadRuntimeArchiveSignature:
+			utils.updater.downloadRuntimeArchiveSignature,
 		validateSignature: utils.updater.validateSignature,
 		getCurrentExecutablePath: utils.updater.getCurrentExecutablePath,
 	};
@@ -253,9 +271,14 @@ test("packaged startup bootstraps runtime sidecar when missing", async () => {
 		utils.updater.downloadRuntimeArchiveSignature =
 			originalUpdater.downloadRuntimeArchiveSignature;
 		utils.updater.validateSignature = originalUpdater.validateSignature;
-		utils.updater.getCurrentExecutablePath = originalUpdater.getCurrentExecutablePath;
+		utils.updater.getCurrentExecutablePath =
+			originalUpdater.getCurrentExecutablePath;
 		if (defaultExeNameDescriptor) {
-			Object.defineProperty(utils.updater, "defaultExeName", defaultExeNameDescriptor);
+			Object.defineProperty(
+				utils.updater,
+				"defaultExeName",
+				defaultExeNameDescriptor,
+			);
 		}
 		state.logger = originalLogger;
 		state.settings.KeepOldBinary = originalKeepOldBinary;
