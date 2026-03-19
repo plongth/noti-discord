@@ -112,6 +112,10 @@ if (!globalThis.crypto) {
 
 	state.logger.info("Starting");
 
+	if (process.pkg) {
+		await utils.updater.ensureRuntimeSidecar(version);
+	}
+
 	const conversion = await utils.sqliteToJson.convert();
 	if (!conversion) {
 		state.logger.error("Conversion failed!");

@@ -1,7 +1,7 @@
 # Runtime And Layout
 
 > Owner: WA2DC maintainers
-> Last reviewed: 2026-02-24
+> Last reviewed: 2026-03-19
 > Scope: Runtime model, startup, and repository map.
 
 ## Runtime model
@@ -28,6 +28,8 @@ Primary flow:
 - Bundle for pkg: `npm run bundle:pkg`
 - Build local binary: `npm run build:bin`
   packaged output includes the executable plus `build/runtime/` for native sidecar modules
+  release automation also publishes a signed `${binary}.runtime.tar.gz` archive so packaged self-update can replace the sidecar automatically
+  packaged startup will also try to bootstrap `runtime/` from the matching signed release asset when the sidecar is missing or unusable
 
 Smoke startup without external connections:
 

@@ -4,6 +4,7 @@ import dns from "node:dns";
 import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
+import { createRequire } from "node:module";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -18,6 +19,7 @@ import {
 import discordJs from "discord.js";
 import * as linkPreview from "link-preview-js";
 import QRCode from "qrcode";
+import * as tar from "tar";
 import { Agent } from "undici";
 import { getImageJimp, getImageSharp } from "./imageLibs.js";
 import messageStore from "./messageStore.js";
@@ -1483,6 +1485,48 @@ const updater = {
 		return true;
 	},
 
+	getCurrentExecutablePath() {
+		if (typeof process.execPath === "string" && process.execPath) {
+			return process.execPath;
+		}
+		return path.resolve(this.currentExeName);
+	},
+
+	getRuntimeSidecarPath() {
+		return path.join(path.dirname(this.getCurrentExecutablePath()), "runtime");
+	},
+
+	getRuntimeArchiveName(defaultExeName) {
+		return `${defaultExeName}.runtime.tar.gz`;
+	},
+
+	getPackagedRuntimeRequire() {
+		if (!process.pkg) {
+			return null;
+		}
+		return createRequire(
+			path.join(this.getRuntimeSidecarPath(), "package.json"),
+		);
+	},
+
+	isRuntimeSidecarUsable() {
+		if (!process.pkg) {
+			return true;
+		}
+		try {
+			fs.accessSync(
+				path.join(this.getRuntimeSidecarPath(), "package.json"),
+				fs.constants.F_OK,
+			);
+			const runtimeRequire = this.getPackagedRuntimeRequire();
+			const sharpFromSidecar = runtimeRequire?.("sharp");
+			const sharp = sharpFromSidecar?.default || sharpFromSidecar || null;
+			return typeof sharp === "function";
+		} catch {
+			return false;
+		}
+	},
+
 	get channel() {
 		const envChannel = process.env.WA2DC_UPDATE_CHANNEL?.toLowerCase();
 		const configuredChannel = (
@@ -1493,7 +1537,7 @@ const updater = {
 	},
 
 	async renameOldVersion() {
-		const currentPath = this.currentExeName;
+		const currentPath = this.getCurrentExecutablePath();
 		const backupPath = `${currentPath}.oldVersion`;
 
 		try {
@@ -1520,6 +1564,34 @@ const updater = {
 		return true;
 	},
 
+	async backupRuntimeSidecar() {
+		const runtimePath = this.getRuntimeSidecarPath();
+		const backupPath = `${runtimePath}.oldVersion`;
+
+		try {
+			await fs.promises.access(runtimePath, fs.constants.F_OK);
+		} catch (err) {
+			if (err.code === "ENOENT") {
+				return false;
+			}
+			throw err;
+		}
+
+		try {
+			await fs.promises.rm(backupPath, { recursive: true, force: true });
+		} catch (err) {
+			if (err.code !== "ENOENT") {
+				state.logger?.warn(
+					{ err },
+					"Failed to remove previous runtime backup before update.",
+				);
+			}
+		}
+
+		await fs.promises.rename(runtimePath, backupPath);
+		return true;
+	},
+
 	cleanOldVersion() {
 		if (
 			process.env.WA2DC_KEEP_OLD_BINARY === "1" ||
@@ -1528,20 +1600,54 @@ const updater = {
 			return;
 		}
 		const candidates = [
-			path.resolve(`${this.currentExeName}.oldVersion`),
-			path.join(
-				path.dirname(process.execPath || ""),
-				`${path.basename(process.execPath || this.currentExeName)}.oldVersion`,
-			),
-		].filter(Boolean);
+			`${this.getCurrentExecutablePath()}.oldVersion`,
+			`${this.getRuntimeSidecarPath()}.oldVersion`,
+		];
 		for (const candidate of candidates) {
-			fs.rm(candidate, { force: true }, () => 0);
+			fs.rm(candidate, { recursive: true, force: true }, () => 0);
 		}
 	},
 
 	async revertChanges() {
-		const currentPath = process.execPath || path.resolve(this.currentExeName);
+		const currentPath = this.getCurrentExecutablePath();
 		const backupPath = `${currentPath}.oldVersion`;
+		const runtimePath = this.getRuntimeSidecarPath();
+		const runtimeBackupPath = `${runtimePath}.oldVersion`;
+
+		try {
+			await fs.promises.access(runtimeBackupPath, fs.constants.F_OK);
+			try {
+				await fs.promises.rm(runtimePath, { recursive: true, force: true });
+			} catch (err) {
+				if (err.code !== "ENOENT") {
+					state.logger?.error(
+						{ err },
+						"Failed to remove partially updated runtime sidecar.",
+					);
+					throw err;
+				}
+			}
+			await fs.promises.rename(runtimeBackupPath, runtimePath);
+		} catch (err) {
+			if (err.code !== "ENOENT") {
+				state.logger?.error(
+					{ err },
+					"Failed to restore original runtime sidecar after update failure.",
+				);
+				throw err;
+			}
+			try {
+				await fs.promises.rm(runtimePath, { recursive: true, force: true });
+			} catch (runtimeErr) {
+				if (runtimeErr.code !== "ENOENT") {
+					state.logger?.error(
+						{ err: runtimeErr },
+						"Failed to clean partially installed runtime sidecar after update failure.",
+					);
+					throw runtimeErr;
+				}
+			}
+		}
 
 		try {
 			await fs.promises.access(backupPath, fs.constants.F_OK);
@@ -1663,9 +1769,9 @@ const updater = {
 		return `https://github.com/arespawn/WhatsAppToDiscord/releases/download/${versionTag}/${name}`;
 	},
 
-	async downloadLatestVersion(defaultExeName, name, versionTag) {
+	async downloadLatestVersion(defaultExeName, targetPath, versionTag) {
 		return requests.downloadFile(
-			name,
+			targetPath,
 			this.buildDownloadUrl(versionTag, defaultExeName),
 		);
 	},
@@ -1679,6 +1785,190 @@ const updater = {
 			return false;
 		}
 		return signature;
+	},
+
+	async downloadRuntimeArchive(defaultExeName, targetPath, versionTag) {
+		return requests.downloadFile(
+			targetPath,
+			this.buildDownloadUrl(
+				versionTag,
+				this.getRuntimeArchiveName(defaultExeName),
+			),
+		);
+	},
+
+	async downloadRuntimeArchiveSignature(defaultExeName, versionTag) {
+		const archiveName = this.getRuntimeArchiveName(defaultExeName);
+		const signature = await requests.fetchBuffer(
+			this.buildDownloadUrl(versionTag, `${archiveName}.sig`),
+		);
+		if ("error" in signature) {
+			state.logger?.error(
+				"Couldn't fetch the signature of the runtime sidecar update.",
+			);
+			return false;
+		}
+		return signature;
+	},
+
+	async installRuntimeArchive(archivePath) {
+		const runtimePath = this.getRuntimeSidecarPath();
+		const tempRoot = await fs.promises.mkdtemp(
+			path.join(os.tmpdir(), "wa2dc-runtime-install-"),
+		);
+		try {
+			await tar.extract({
+				cwd: tempRoot,
+				file: archivePath,
+				strict: true,
+			});
+			const extractedRuntimePath = path.join(tempRoot, "runtime");
+			await fs.promises.access(
+				path.join(extractedRuntimePath, "package.json"),
+				fs.constants.F_OK,
+			);
+			await fs.promises.mkdir(path.dirname(runtimePath), { recursive: true });
+			await fs.promises.rm(runtimePath, { recursive: true, force: true });
+			await fs.promises.rename(extractedRuntimePath, runtimePath);
+		} finally {
+			await fs.promises.rm(tempRoot, { recursive: true, force: true });
+		}
+	},
+
+	async restoreRuntimeSidecarBackup() {
+		const runtimePath = this.getRuntimeSidecarPath();
+		const backupPath = `${runtimePath}.oldVersion`;
+		try {
+			await fs.promises.access(backupPath, fs.constants.F_OK);
+		} catch (err) {
+			if (err.code === "ENOENT") {
+				await fs.promises.rm(runtimePath, {
+					recursive: true,
+					force: true,
+				});
+				return false;
+			}
+			throw err;
+		}
+
+		await fs.promises.rm(runtimePath, { recursive: true, force: true });
+		await fs.promises.rename(backupPath, runtimePath);
+		return true;
+	},
+
+	async ensureRuntimeSidecar(versionTag = state.version) {
+		if (!process.pkg) {
+			return true;
+		}
+		if (this.isRuntimeSidecarUsable()) {
+			return true;
+		}
+
+		const normalizedVersion =
+			typeof versionTag === "string" && versionTag.trim()
+				? versionTag.trim()
+				: null;
+		const defaultExeName = this.defaultExeName;
+		if (!normalizedVersion || !defaultExeName) {
+			state.logger?.warn?.(
+				{
+					versionTag: normalizedVersion,
+					defaultExeName,
+				},
+				"Packaged runtime sidecar is unavailable and could not be bootstrapped automatically.",
+			);
+			return false;
+		}
+
+		state.logger?.warn?.(
+			{
+				versionTag: normalizedVersion,
+				runtimePath: this.getRuntimeSidecarPath(),
+			},
+			"Packaged runtime sidecar missing or unusable; attempting signed bootstrap.",
+		);
+
+		let backedUp = false;
+		try {
+			backedUp = await this.backupRuntimeSidecar();
+		} catch (err) {
+			state.logger?.warn?.(
+				{ err },
+				"Failed to prepare packaged runtime sidecar backup before bootstrap.",
+			);
+			return false;
+		}
+
+		const runtimeArchiveName = this.getRuntimeArchiveName(defaultExeName);
+		const runtimeArchivePath = path.join(os.tmpdir(), runtimeArchiveName);
+		try {
+			await fs.promises.rm(runtimeArchivePath, { force: true });
+			const runtimeDownloadStatus = await this.downloadRuntimeArchive(
+				defaultExeName,
+				runtimeArchivePath,
+				normalizedVersion,
+			);
+			if (!runtimeDownloadStatus) {
+				throw new Error("runtime_archive_download_failed");
+			}
+			const runtimeSignature = await this.downloadRuntimeArchiveSignature(
+				defaultExeName,
+				normalizedVersion,
+			);
+			if (!runtimeSignature) {
+				throw new Error("runtime_archive_signature_missing");
+			}
+			if (!this.validateSignature(runtimeSignature.result, runtimeArchivePath)) {
+				throw new Error("runtime_archive_signature_invalid");
+			}
+
+			await this.installRuntimeArchive(runtimeArchivePath);
+			if (!this.isRuntimeSidecarUsable()) {
+				throw new Error("runtime_sidecar_unusable_after_install");
+			}
+			if (
+				process.env.WA2DC_KEEP_OLD_BINARY !== "1" &&
+				!state.settings?.KeepOldBinary
+			) {
+				await fs.promises
+					.rm(`${this.getRuntimeSidecarPath()}.oldVersion`, {
+						recursive: true,
+						force: true,
+					})
+					.catch(() => {});
+			}
+			state.logger?.info?.(
+				{
+					versionTag: normalizedVersion,
+					runtimePath: this.getRuntimeSidecarPath(),
+				},
+				"Bootstrapped packaged runtime sidecar from signed release asset.",
+			);
+			return true;
+		} catch (err) {
+			state.logger?.warn?.(
+				{ err, versionTag: normalizedVersion },
+				"Failed to bootstrap packaged runtime sidecar automatically.",
+			);
+			try {
+				if (backedUp) {
+					await this.restoreRuntimeSidecarBackup();
+				} else {
+					await fs.promises.rm(this.getRuntimeSidecarPath(), {
+						recursive: true,
+						force: true,
+					});
+				}
+			} catch (restoreErr) {
+				state.logger?.warn?.(
+					{ err: restoreErr },
+					"Failed to restore packaged runtime sidecar after bootstrap failure.",
+				);
+			}
+			return false;
+		} finally {
+			await fs.promises.rm(runtimeArchivePath, { force: true }).catch(() => {});
+		}
 	},
 
 	validateSignature(signature, name) {
@@ -1704,7 +1994,7 @@ const updater = {
 			return false;
 		}
 
-		const currExeName = this.currentExeName;
+		const currExePath = this.getCurrentExecutablePath();
 		const defaultExeName = this.defaultExeName;
 		if (!defaultExeName) {
 			state.logger?.info(
@@ -1713,13 +2003,23 @@ const updater = {
 			return false;
 		}
 
-		await this.renameOldVersion();
+		try {
+			await this.renameOldVersion();
+			await this.backupRuntimeSidecar();
+		} catch (err) {
+			state.logger?.error(
+				{ err },
+				"Failed to prepare current packaged install for update.",
+			);
+			await this.revertChanges();
+			return false;
+		}
 
 		let downloadStatus;
 		try {
 			downloadStatus = await this.downloadLatestVersion(
 				defaultExeName,
-				currExeName,
+				currExePath,
 				targetVersion,
 			);
 		} catch (err) {
@@ -1735,7 +2035,7 @@ const updater = {
 		}
 		if (os.platform() !== "win32") {
 			try {
-				await fs.promises.chmod(currExeName, 0o755);
+				await fs.promises.chmod(currExePath, 0o755);
 			} catch (err) {
 				state.logger?.error(
 					{ err },
@@ -1757,25 +2057,67 @@ const updater = {
 			await this.revertChanges();
 			return false;
 		}
-		if (!this.validateSignature(signature.result, currExeName)) {
+		if (!this.validateSignature(signature.result, currExePath)) {
 			state.logger?.error(
 				"Couldn't verify the signature of the updated binary, reverting back. Please update manually.",
 			);
 			await this.revertChanges();
 			return false;
 		}
+
+		const runtimeArchiveName = this.getRuntimeArchiveName(defaultExeName);
+		const runtimeArchivePath = path.join(os.tmpdir(), runtimeArchiveName);
+		try {
+			await fs.promises.rm(runtimeArchivePath, { force: true });
+			const runtimeDownloadStatus = await this.downloadRuntimeArchive(
+				defaultExeName,
+				runtimeArchivePath,
+				targetVersion,
+			);
+			if (!runtimeDownloadStatus) {
+				state.logger?.error(
+					"Download failed for the packaged runtime sidecar. Reverting back.",
+				);
+				await this.revertChanges();
+				return false;
+			}
+
+			const runtimeSignature = await this.downloadRuntimeArchiveSignature(
+				defaultExeName,
+				targetVersion,
+			);
+			if (!runtimeSignature) {
+				state.logger?.error(
+					"Missing signature for the packaged runtime sidecar update. Reverting back.",
+				);
+				await this.revertChanges();
+				return false;
+			}
+			if (!this.validateSignature(runtimeSignature.result, runtimeArchivePath)) {
+				state.logger?.error(
+					"Couldn't verify the signature of the packaged runtime sidecar update, reverting back. Please update manually.",
+				);
+				await this.revertChanges();
+				return false;
+			}
+
+			await this.installRuntimeArchive(runtimeArchivePath);
+		} catch (err) {
+			state.logger?.error(
+				{ err },
+				"Failed to install the packaged runtime sidecar update. Reverting back.",
+			);
+			await this.revertChanges();
+			return false;
+		} finally {
+			await fs.promises.rm(runtimeArchivePath, { force: true }).catch(() => {});
+		}
 		this.cleanOldVersion();
 		return true;
 	},
 
 	async hasBackup() {
-		const candidates = [
-			path.resolve(`${this.currentExeName}.oldVersion`),
-			path.join(
-				path.dirname(process.execPath || ""),
-				`${path.basename(process.execPath || this.currentExeName)}.oldVersion`,
-			),
-		].filter(Boolean);
+		const candidates = [`${this.getCurrentExecutablePath()}.oldVersion`];
 		for (const backupPath of candidates) {
 			try {
 				await fs.promises.access(backupPath, fs.constants.F_OK);

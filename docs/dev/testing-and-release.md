@@ -27,6 +27,8 @@ Release pipeline builds packaged binaries from a pkg-safe CJS bundle:
 - esbuild bundles `src/runner.js` to `out.cjs` (CJS) for pkg
 - `pkg` produces platform binaries from `out.cjs` with `--no-bytecode`
 - packaged builds also stage `build/runtime/node_modules/sharp` as a sidecar so native image normalization remains available in packaged runtimes
+- release builds publish a signed `${binary}.runtime.tar.gz` archive for each packaged binary so `/update` can refresh the sidecar automatically
+- packaged startup may download that signed runtime archive on demand when a packaged install is missing `runtime/`
 - runtime may branch on `process.pkg` for packaged-vs-source behavior
 
 ## Packaging-safe dependency rules
@@ -37,5 +39,6 @@ When adding/changing dependencies, verify:
 - pkg can resolve/load any runtime assets
 - dynamic fs/native addon behavior is explicitly handled when required
 - packaged releases keep the executable and `runtime/` sidecar together; moving the binary without its sidecar can disable native modules such as `sharp`
+- packaged self-update must refresh both the executable and the matching signed runtime sidecar archive, and rollback paths must restore both artifacts together
 
 Generated artifacts (`out.js`, `out.cjs`, `build/`) should not be manually edited.

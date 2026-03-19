@@ -1669,6 +1669,79 @@ test("Unsupported Discord static WebP attachments are normalized before WhatsApp
 	}
 });
 
+test("Unsupported Discord AVIF attachments are normalized before WhatsApp send", async (t) => {
+	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
+	try {
+		const sharpMod = await import("sharp");
+		const sharp = sharpMod?.default || sharpMod;
+		if (!sharp.format?.avif?.output?.buffer) {
+			t.skip("sharp build does not support AVIF output");
+			return;
+		}
+		const avifBytes = await sharp({
+			create: {
+				width: 2,
+				height: 2,
+				channels: 4,
+				background: { r: 0, g: 0, b: 255, alpha: 1 },
+			},
+		})
+			.avif()
+			.toBuffer();
+		const attachmentUrl = `data:image/avif;base64,${avifBytes.toString("base64")}`;
+
+		utils.whatsapp.createDocumentContent = (attachment) => ({
+			image: { url: attachment.url },
+			mimetype: attachment.contentType,
+		});
+
+		harness.fakeClient.ev.emit("discordMessage", {
+			jid: "120363123456789@s.whatsapp.net",
+			forwardContext: null,
+			message: {
+				id: "dc-static-avif",
+				content: "",
+				cleanContent: "",
+				webhookId: null,
+				author: { username: "BridgeUser" },
+				member: { displayName: "BridgeUser" },
+				channel: { send: async () => {} },
+				attachments: new Map([
+					[
+						"attachment-1",
+						{
+							id: "attachment-1",
+							url: attachmentUrl,
+							name: "paste.avif",
+							contentType: "image/avif",
+						},
+					],
+				]),
+				stickers: new Map(),
+				embeds: [],
+				mentions: { users: new Map(), members: new Map(), roles: new Map() },
+			},
+		});
+
+		const sent = await waitFor(
+			() => harness.fakeClient.sendCalls.length === 1,
+			{
+				timeoutMs: 1500,
+			},
+		);
+
+		assert.equal(sent, true);
+		const sentContent = harness.fakeClient.sendCalls[0]?.content || {};
+		assert.ok(Buffer.isBuffer(sentContent.image));
+		assert.equal(sentContent.mimetype, "image/png");
+		assert.equal(sentContent.document, undefined);
+		assert.equal(sentContent.width, 2);
+		assert.equal(sentContent.height, 2);
+	} finally {
+		harness.cleanup();
+	}
+});
+
 test("Unsupported Discord TIFF attachments fall back to Jimp when sharp is unavailable", async () => {
 	const harness = await setupWhatsAppHarness({ oneWay: 0b11 });
 	try {
