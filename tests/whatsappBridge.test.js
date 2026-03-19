@@ -151,7 +151,8 @@ const setupWhatsAppHarness = async ({
 		state.dcClient.on("whatsappPin", (payload) => forwarded.pins.push(payload));
 
 		class FakeWhatsAppClient {
-			constructor() {
+			constructor(config = {}) {
+				this.config = config;
 				this.ev = new EventEmitter();
 				this.sendCalls = [];
 				this.relayCalls = [];
@@ -164,9 +165,28 @@ const setupWhatsAppHarness = async ({
 			}
 
 			async sendMessage(jid, content, options) {
-				this.sendCalls.push({ jid, content, options });
 				this._sendCounter += 1;
-				const key = { id: `sent-${this._sendCounter}`, remoteJid: jid };
+				const messageId = options?.messageId || `sent-${this._sendCounter}`;
+				let patchedMessage = {
+					key: { id: messageId, remoteJid: jid },
+					message: {},
+				};
+				if (content?.audio) {
+					patchedMessage.message.audioMessage = {
+						ptt: content.ptt,
+						seconds: content.seconds,
+						mimetype: content.mimetype,
+						waveform: undefined,
+					};
+				}
+				if (typeof this.config.patchMessageBeforeSending === "function") {
+					patchedMessage = await this.config.patchMessageBeforeSending(
+						patchedMessage,
+						[],
+					);
+				}
+				this.sendCalls.push({ jid, content, options, patchedMessage });
+				const key = { id: messageId, remoteJid: jid };
 				if (typeof jid === "string" && jid.endsWith("@newsletter")) {
 					key.server_id = `server-${this._sendCounter}`;
 				}
@@ -191,9 +211,12 @@ const setupWhatsAppHarness = async ({
 			}
 		}
 
-		const fakeClient = new FakeWhatsAppClient();
+		let fakeClient = null;
 		setClientFactoryOverrides({
-			createWhatsAppClient: () => fakeClient,
+			createWhatsAppClient: (config) => {
+				fakeClient = new FakeWhatsAppClient(config);
+				return fakeClient;
+			},
 			getBaileysVersion: async () => ({ version: [1, 0, 0] }),
 		});
 
@@ -1540,10 +1563,14 @@ test("Discord voice-style audio attachments are sent as WhatsApp ptt messages", 
 		assert.equal(sent, true);
 		assert.equal(harness.fakeClient.sendCalls.length, 1);
 		const sentContent = harness.fakeClient.sendCalls[0]?.content || {};
+		const patchedAudioMessage =
+			harness.fakeClient.sendCalls[0]?.patchedMessage?.message?.audioMessage || {};
 		assert.equal(sentContent.ptt, true);
 		assert.equal(sentContent.seconds, 4);
 		assert.ok(Buffer.isBuffer(sentContent.audio));
 		assert.ok(Buffer.isBuffer(sentContent.waveform));
+		assert.ok(Buffer.isBuffer(patchedAudioMessage.waveform));
+		assert.equal(patchedAudioMessage.waveform.length, sentContent.waveform.length);
 		assert.ok(String(sentContent.mimetype || "").startsWith("audio/ogg"));
 	} finally {
 		harness.cleanup();
