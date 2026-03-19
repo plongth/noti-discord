@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -282,6 +283,87 @@ test("packaged startup bootstraps runtime sidecar when missing", async () => {
 		}
 		state.logger = originalLogger;
 		state.settings.KeepOldBinary = originalKeepOldBinary;
+		await fsPromises.rm(tempDir, { recursive: true, force: true });
+		await fsPromises.rm(stagedRuntimeRoot, { recursive: true, force: true });
+	}
+});
+
+test("runtime archive install falls back to copy when rename crosses filesystems", async () => {
+	const tempDir = await fsPromises.mkdtemp(
+		path.join(os.tmpdir(), "wa2dc-runtime-exdev-"),
+	);
+	const currentExePath = path.join(tempDir, "WA2DC-Linux");
+	const runtimePath = path.join(tempDir, "runtime");
+	const stagedRuntimeRoot = await fsPromises.mkdtemp(
+		path.join(os.tmpdir(), "wa2dc-runtime-exdev-staged-"),
+	);
+	const archivePath = path.join(stagedRuntimeRoot, "WA2DC-Linux.runtime.tar.gz");
+
+	const originalGetCurrentExecutablePath = utils.updater.getCurrentExecutablePath;
+	const originalRename = fs.promises.rename;
+	const originalCp = fs.promises.cp;
+	let renameFailed = false;
+	let copyCalled = false;
+
+	try {
+		await fsPromises.writeFile(currentExePath, "binary");
+		await fsPromises.mkdir(
+			path.join(stagedRuntimeRoot, "runtime", "node_modules", "sharp"),
+			{ recursive: true },
+		);
+		await fsPromises.writeFile(
+			path.join(stagedRuntimeRoot, "runtime", "package.json"),
+			'{"private":true,"description":"exdev runtime"}\n',
+		);
+		await fsPromises.writeFile(
+			path.join(
+				stagedRuntimeRoot,
+				"runtime",
+				"node_modules",
+				"sharp",
+				"package.json",
+			),
+			'{"name":"sharp","version":"0.34.5"}\n',
+		);
+		await tar.create(
+			{
+				cwd: stagedRuntimeRoot,
+				file: archivePath,
+				gzip: true,
+				portable: true,
+			},
+			["runtime"],
+		);
+
+		utils.updater.getCurrentExecutablePath = () => currentExePath;
+		fs.promises.rename = async (from, to) => {
+			if (
+				String(from).includes("wa2dc-runtime-install-") &&
+				to === runtimePath
+			) {
+				renameFailed = true;
+				const err = new Error("cross-device");
+				err.code = "EXDEV";
+				throw err;
+			}
+			return originalRename.call(fs.promises, from, to);
+		};
+		fs.promises.cp = async (...args) => {
+			copyCalled = true;
+			return originalCp.call(fs.promises, ...args);
+		};
+
+		await utils.updater.installRuntimeArchive(archivePath);
+		assert.equal(renameFailed, true);
+		assert.equal(copyCalled, true);
+		assert.match(
+			await fsPromises.readFile(path.join(runtimePath, "package.json"), "utf8"),
+			/exdev runtime/u,
+		);
+	} finally {
+		utils.updater.getCurrentExecutablePath = originalGetCurrentExecutablePath;
+		fs.promises.rename = originalRename;
+		fs.promises.cp = originalCp;
 		await fsPromises.rm(tempDir, { recursive: true, force: true });
 		await fsPromises.rm(stagedRuntimeRoot, { recursive: true, force: true });
 	}

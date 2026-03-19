@@ -1476,6 +1476,20 @@ const compareReleases = (leftRelease = {}, rightRelease = {}) => {
 	return releaseSortTimestamp(leftRelease) - releaseSortTimestamp(rightRelease);
 };
 
+const movePathWithCrossDeviceFallback = async (from, to) => {
+	try {
+		await fs.promises.rename(from, to);
+		return;
+	} catch (err) {
+		if (err?.code !== "EXDEV") {
+			throw err;
+		}
+	}
+
+	await fs.promises.cp(from, to, { recursive: true });
+	await fs.promises.rm(from, { recursive: true, force: true });
+};
+
 const updater = {
 	isNode: process.argv0.replace(".exe", "").endsWith("node"),
 
@@ -1829,7 +1843,10 @@ const updater = {
 			);
 			await fs.promises.mkdir(path.dirname(runtimePath), { recursive: true });
 			await fs.promises.rm(runtimePath, { recursive: true, force: true });
-			await fs.promises.rename(extractedRuntimePath, runtimePath);
+			await movePathWithCrossDeviceFallback(
+				extractedRuntimePath,
+				runtimePath,
+			);
 		} finally {
 			await fs.promises.rm(tempRoot, { recursive: true, force: true });
 		}
