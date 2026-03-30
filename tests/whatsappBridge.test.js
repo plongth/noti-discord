@@ -45,6 +45,8 @@ const waitFor = async (
 		await delay(intervalMs);
 	}
 };
+const extractUrls = (value = "") =>
+	String(value).match(/https?:\/\/[^\s>]+/gu) || [];
 
 const setupWhatsAppHarness = async ({
 	oneWay = 0b11,
@@ -1413,7 +1415,9 @@ test("Discord embeds can be mirrored to WhatsApp with mention conversion", async
 		assert.ok(mirrored.includes("Embed Title"));
 		assert.ok(mirrored.includes("Hi @14155550123 and @Moderators"));
 		assert.ok(mirrored.includes("Scope: @14155550123"));
-		assert.ok(mirrored.includes("https://example.com/embed"));
+		assert.ok(
+			extractUrls(mirrored).some((url) => url === "https://example.com/embed"),
+		);
 		assert.deepEqual(harness.fakeClient.sendCalls[0]?.content?.mentions, [
 			linkedJid,
 		]);
@@ -2777,7 +2781,9 @@ test("Newsletter unsupported attachments are skipped with FAQ notice", async () 
 		assert.equal(notices.length, 1);
 		assert.ok(String(notices[0]).includes("allow only image/video"));
 		assert.ok(
-			String(notices[0]).includes("https://faq.whatsapp.com/549900560675125"),
+			extractUrls(notices[0]).some(
+				(url) => url === "https://faq.whatsapp.com/549900560675125",
+			),
 		);
 	} finally {
 		harness.cleanup();
@@ -3040,7 +3046,9 @@ test("Newsletter URL fallback enabled keeps only image/video links and notifies 
 		);
 		assert.ok(
 			notices.some((value) =>
-				String(value).includes("https://faq.whatsapp.com/549900560675125"),
+				extractUrls(value).some(
+					(url) => url === "https://faq.whatsapp.com/549900560675125",
+				),
 			),
 		);
 		assert.ok(

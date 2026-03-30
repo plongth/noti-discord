@@ -48,6 +48,16 @@ test("Discord mergeCollectedAttachments dedupes across attachment groups", () =>
 	assert.equal(merged[1].name, "other.png");
 });
 
+test("Discord attachment URL normalization does not trust lookalike discordapp.net hosts", () => {
+	const attackerUrl =
+		"https://evildiscordapp.net/external/token/https/cdn.discordapp.com/attachments/1/2/file.png?format=webp";
+
+	assert.equal(
+		utils.discord.normalizeAttachmentUrl(attackerUrl),
+		"https://evildiscordapp.net/external/token/https/cdn.discordapp.com/attachments/1/2/file.png",
+	);
+});
+
 test("Discord GIF upload previews prefer a single animated video candidate", () => {
 	const attachmentUrl =
 		"https://cdn.discordapp.com/attachments/123/456/funny-cat.gif?ex=abc&is=def";
