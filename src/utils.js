@@ -253,6 +253,16 @@ const verifyDownloadToken = (token) => {
 const normalizeHostname = (hostname = "") =>
 	hostname.replace(/\.$/, "").toLowerCase();
 
+const isHostnameEqualOrSubdomain = (hostname = "", domain = "") => {
+	const normalizedHost = normalizeHostname(hostname);
+	const normalizedDomain = normalizeHostname(domain);
+	if (!normalizedHost || !normalizedDomain) return false;
+	return (
+		normalizedHost === normalizedDomain ||
+		normalizedHost.endsWith(`.${normalizedDomain}`)
+	);
+};
+
 const ipv4ToInt = (addr) => {
 	const parts = String(addr).split(".");
 	if (parts.length !== 4) return null;
@@ -808,14 +818,12 @@ const normalizeAttachmentUrlForDedupe = (value = "") => {
 	if (!trimmed) return "";
 	try {
 		const parsed = new URL(trimmed);
+		const normalizedHost = normalizeHostname(parsed.hostname);
 		if (!["http:", "https:"].includes(parsed.protocol)) {
 			return trimmed;
 		}
 
-		if (
-			typeof parsed.hostname === "string" &&
-			parsed.hostname.endsWith("discordapp.net")
-		) {
+		if (isHostnameEqualOrSubdomain(normalizedHost, "discordapp.net")) {
 			const match = parsed.pathname.match(/\/(https|http)\/([^/]+)\/(.+)/);
 			if (match) {
 				const [, protocol, host, rest] = match;
@@ -824,7 +832,7 @@ const normalizeAttachmentUrlForDedupe = (value = "") => {
 		}
 		parsed.search = "";
 		parsed.hash = "";
-		if (parsed.hostname === "media.discordapp.net") {
+		if (normalizedHost === "media.discordapp.net") {
 			parsed.hostname = "cdn.discordapp.com";
 		}
 		return parsed.toString();
