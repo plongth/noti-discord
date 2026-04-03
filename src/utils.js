@@ -22,6 +22,7 @@ import QRCode from "qrcode";
 import * as tar from "tar";
 import { Agent } from "undici";
 import { getImageSharp } from "./imageLibs.js";
+import { createWhatsAppGifToDiscordFileNormalizer } from "./internal/whatsappGifToDiscordNormalization.js";
 import messageStore from "./messageStore.js";
 import state from "./state.js";
 import storage from "./storage.js";
@@ -123,6 +124,10 @@ const UPDATE_BUTTON_IDS = {
 	SKIP: "wa2dc:skip-update",
 };
 const ROLLBACK_BUTTON_ID = "wa2dc:rollback";
+const normalizeWhatsAppGifFileForDiscord =
+	createWhatsAppGifToDiscordFileNormalizer({
+		getLogger: () => state.logger,
+	});
 const resolveLinkPreviewFromContentFn = () => {
 	let moduleExports;
 	if (linkPreview && typeof linkPreview === "object") {
@@ -4457,16 +4462,45 @@ const whatsapp = {
 		const largeFile = fileLength > state.settings.DiscordFileSizeLimit;
 		if (largeFile && !state.settings.LocalDownloads) return -1;
 		try {
+			const baseName = this.getFilename(msg, nMsgType);
 			if (largeFile && state.settings.LocalDownloads) {
 				return {
-					name: this.getFilename(msg, nMsgType),
+					name: baseName,
 					downloadCtx: rawMsg,
 					msgType: nMsgType,
 					largeFile: true,
 				};
 			}
+			if (nMsgType === "videoMessage" && msg.gifPlayback) {
+				const attachmentBuffer = Buffer.from(
+					await downloadMediaMessage(
+						rawMsg,
+						"buffer",
+						{},
+						{
+							logger: state.logger,
+							reuploadRequest: state.waClient.updateMediaMessage,
+						},
+					),
+				);
+				const normalizedGif = await normalizeWhatsAppGifFileForDiscord({
+					attachmentBuffer,
+					fileName: baseName,
+					mimetype: msg.mimetype,
+					jid: remoteJid,
+					messageId: this.getId(rawMsg),
+				});
+				return {
+					name: normalizedGif.fileName,
+					attachment: normalizedGif.attachmentBuffer,
+					contentType: normalizedGif.contentType,
+					largeFile,
+					downloadCtx: rawMsg,
+					msgType: nMsgType,
+				};
+			}
 			return {
-				name: this.getFilename(msg, nMsgType),
+				name: baseName,
 
 				attachment: await downloadMediaMessage(
 					rawMsg,

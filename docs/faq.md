@@ -31,6 +31,12 @@ WA2DC can mirror Discord voice-style attachments to WhatsApp voice notes (`ptt`)
 - For best compatibility, install `ffmpeg` on the host running WA2DC. The bridge will transcode Discord voice uploads to Opus/Ogg mono before sending.
 - If `ffmpeg` is not installed, WA2DC still attempts a raw audio send, but some voice uploads may fail on WhatsApp clients.
 
+## Why did a WhatsApp GIF arrive on Discord as a video?
+WhatsApp usually exposes GIF sends as short `videoMessage` payloads flagged with `gifPlayback`, not as literal `.gif` files.
+
+- For best compatibility, install `ffmpeg` on the host running WA2DC. The bridge will transcode WhatsApp GIF-playback videos into real Discord GIF attachments when possible.
+- If `ffmpeg` is not installed or transcoding fails, WA2DC falls back to mirroring the original WhatsApp video attachment, so Discord may show a play button instead of an inline GIF.
+
 ## Why did a Discord image arrive on WhatsApp as a file?
 WA2DC now normalizes static unsupported Discord image formats such as pasted WebP before sending them to WhatsApp. This normalization relies on `sharp`. If `sharp` is unavailable in the current runtime or the image still cannot be decoded safely, the bridge falls back to sending it as a regular document so the message is still delivered instead of being dropped.
 
