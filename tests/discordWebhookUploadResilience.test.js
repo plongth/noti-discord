@@ -17,6 +17,15 @@ test("Discord webhook transport classifier treats fetch timeout failures as retr
 	assert.equal(utils.discord.isRetryableWebhookTransportError(err), true);
 });
 
+test("Discord webhook transport classifier treats HTTP/2 protocol stream failures as retryable", () => {
+	const err = new Error("Stream closed with error code NGHTTP2_PROTOCOL_ERROR");
+	err.code = "ERR_HTTP2_STREAM_ERROR";
+	err.stack =
+		"Error [ERR_HTTP2_STREAM_ERROR]: Stream closed with error code NGHTTP2_PROTOCOL_ERROR\n    at ClientHttp2Stream._destroy (node:internal/http2/core:2463:13)";
+
+	assert.equal(utils.discord.isRetryableWebhookTransportError(err), true);
+});
+
 test("WhatsApp-backed Discord uploads honor the configured burst size", () => {
 	const originalBurstSize = state.settings.WhatsAppDiscordMediaBurstSize;
 	try {

@@ -128,6 +128,9 @@ const RETRYABLE_WEBHOOK_MESSAGE_HINTS = [
 	"fetch failed",
 	"terminated",
 	"other side closed",
+	"stream closed with error code",
+	"nghttp2_protocol_error",
+	"protocol error",
 	"socket",
 	"timed out",
 	"timeout",
@@ -140,6 +143,7 @@ const RETRYABLE_WEBHOOK_MESSAGE_HINTS = [
 const RETRYABLE_WEBHOOK_CODE_HINTS = [
 	"ABORT_ERR",
 	"UND_ERR",
+	"ERR_HTTP2_STREAM_ERROR",
 	"ECONNRESET",
 	"ETIMEDOUT",
 	"EHOSTUNREACH",
