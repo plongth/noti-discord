@@ -22,6 +22,7 @@ const state = {
 		DownloadDirMaxAgeDays: 0,
 		DownloadDirMinFreeGB: 0,
 		DiscordFileSizeLimit: 8 * 1024 * 1024,
+		WhatsAppDiscordMediaBurstSize: 10,
 		LocalDownloadServer: false,
 		LocalDownloadServerHost: "localhost",
 		LocalDownloadServerBindHost: "127.0.0.1",

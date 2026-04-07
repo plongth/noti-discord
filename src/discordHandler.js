@@ -1066,7 +1066,7 @@ const sendWhatsappMessage = async (
 			return chunks;
 		};
 
-		const fileChunks = chunkArray(files, 10);
+		const fileChunks = utils.discord.chunkWebhookFilesForSend(files);
 		const normalizedMessageIds = [
 			...new Set(
 				(messageIds.length ? messageIds : [message.id])
@@ -4668,6 +4668,32 @@ const commandHandlers = {
 			} else {
 				await ctx.reply("Please provide a valid size in bytes.");
 			}
+		},
+	},
+	setwamediaburstsize: {
+		description:
+			"Set how many WhatsApp attachments are uploaded to Discord per batch.",
+		options: [
+			{
+				name: "count",
+				description:
+					"Attachment count per Discord upload batch for WhatsApp media bursts (1-10).",
+				type: ApplicationCommandOptionTypes.INTEGER,
+				required: true,
+			},
+		],
+		async execute(ctx) {
+			const count = ctx.getIntegerOption("count");
+			if (!Number.isInteger(count) || count < 1 || count > 10) {
+				await ctx.reply(
+					"Please provide a valid attachment count between 1 and 10.",
+				);
+				return;
+			}
+			state.settings.WhatsAppDiscordMediaBurstSize = count;
+			await ctx.reply(
+				`WhatsApp to Discord media burst size is set to ${count} attachment${count === 1 ? "" : "s"} per batch.`,
+			);
 		},
 	},
 	localdownloadserver: {
