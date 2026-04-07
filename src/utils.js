@@ -62,6 +62,9 @@ const buildUnicodeMentionRegex = (token) =>
 	new RegExp(`@${escapeRegex(token)}(?=$|\\s|[\\p{P}\\p{S}])`, "giu");
 const buildWordBoundaryMentionRegex = (token) =>
 	new RegExp(`@${escapeRegex(token)}(?=\\W|$)`, "g");
+const asLower = (value) => String(value || "").toLowerCase();
+const includesHint = (text, hints) =>
+	hints.some((hint) => text.includes(asLower(hint)));
 const isUnknownDisplayName = (value = "") =>
 	String(value).trim().toLowerCase() === UNKNOWN_DISPLAY_NAME.toLowerCase();
 const isUnknownOrSelfDisplayName = (value = "") => {
@@ -115,10 +118,34 @@ const LINK_PREVIEW_MAX_REDIRECTS = 5;
 const LINK_PREVIEW_FETCH_OPTS = { timeout: LINK_PREVIEW_FETCH_TIMEOUT_MS };
 const LINK_PREVIEW_MAX_BYTES = 1024 * 1024;
 const LINK_PREVIEW_THUMB_MAX_BYTES = 8 * 1024 * 1024;
+const DISCORD_MAX_FILES_PER_MESSAGE = 10;
 const EXPLICIT_URL_REGEX = /<?https?:\/\/[^\s>]+>?/i;
 const BARE_URL_REGEX =
 	/(?:^|[\s<])((?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[\w\-./?%&=+#]*)?)(?=$|[\s>)\],.;!?])/i;
 const TRAILING_PUNCTUATION_REGEX = /[)\],.;!?]+$/;
+const RETRYABLE_WEBHOOK_MESSAGE_HINTS = [
+	"aborted",
+	"fetch failed",
+	"terminated",
+	"other side closed",
+	"socket",
+	"timed out",
+	"timeout",
+	"econnreset",
+	"etimedout",
+	"ehostunreach",
+	"enotfound",
+	"eai_again",
+];
+const RETRYABLE_WEBHOOK_CODE_HINTS = [
+	"ABORT_ERR",
+	"UND_ERR",
+	"ECONNRESET",
+	"ETIMEDOUT",
+	"EHOSTUNREACH",
+	"ENOTFOUND",
+	"EAI_AGAIN",
+];
 const UPDATE_BUTTON_IDS = {
 	APPLY: "wa2dc:update",
 	SKIP: "wa2dc:skip-update",
@@ -638,6 +665,52 @@ const fetchPreviewBuffer = async (
 			clearTimeout(timeout);
 		}
 	}
+};
+
+const isRetryableWebhookTransportError = (err) => {
+	const messageText = asLower(
+		[err?.message, err?.cause?.message].filter(Boolean).join(" | "),
+	);
+	const codeText = asLower(
+		[err?.code, err?.cause?.code].filter(Boolean).join(" | "),
+	);
+	const stackText = asLower(
+		[err?.stack, err?.cause?.stack].filter(Boolean).join("\n"),
+	);
+	return (
+		includesHint(messageText, RETRYABLE_WEBHOOK_MESSAGE_HINTS) ||
+		includesHint(codeText, RETRYABLE_WEBHOOK_CODE_HINTS) ||
+		stackText.includes("node:internal/deps/undici/undici") ||
+		stackText.includes("/undici/")
+	);
+};
+
+const isWhatsAppStreamBackedDiscordFile = (file) =>
+	Boolean(file?.downloadCtx) && typeof file?.attachment?.pipe === "function";
+
+const resolveWhatsAppDiscordMediaBurstSize = (value) => {
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed) || parsed < 1) {
+		return DISCORD_MAX_FILES_PER_MESSAGE;
+	}
+	return Math.min(Math.floor(parsed), DISCORD_MAX_FILES_PER_MESSAGE);
+};
+
+const chunkDiscordWebhookFilesForSend = (files = []) => {
+	const normalizedFiles = Array.isArray(files) ? files.filter(Boolean) : [];
+	if (!normalizedFiles.length) {
+		return [];
+	}
+	const chunkSize = normalizedFiles.some(isWhatsAppStreamBackedDiscordFile)
+		? resolveWhatsAppDiscordMediaBurstSize(
+				state.settings?.WhatsAppDiscordMediaBurstSize,
+			)
+		: DISCORD_MAX_FILES_PER_MESSAGE;
+	const chunks = [];
+	for (let i = 0; i < normalizedFiles.length; i += chunkSize) {
+		chunks.push(normalizedFiles.slice(i, i + chunkSize));
+	}
+	return chunks;
 };
 
 const sanitizeFileName = (name = "", fallback = "file") => {
@@ -2469,6 +2542,10 @@ const discord = {
 	partitionText(text) {
 		return text.match(/(.|[\r\n]){1,2000}/g) || [];
 	},
+	isRetryableWebhookTransportError,
+	chunkWebhookFilesForSend(files) {
+		return chunkDiscordWebhookFilesForSend(files);
+	},
 	async sendPartitioned(channel, text) {
 		if (!channel || !text) return;
 		const parts = this.partitionText(text);
@@ -2821,7 +2898,8 @@ const discord = {
 			err?.name === "AbortError" ||
 			err?.name === "AbortError2" ||
 			err?.code === "ABORT_ERR" ||
-			/aborted/i.test(err?.message || "");
+			/aborted/i.test(err?.message || "") ||
+			isRetryableWebhookTransportError(err);
 
 		const extractFileNames = (files) => {
 			if (!Array.isArray(files)) return [];
@@ -3052,7 +3130,7 @@ const discord = {
 					lastAbortError = err;
 					state.logger?.warn(
 						{ err, attempt: attempt + 1 },
-						"Discord webhook request was aborted.",
+						"Discord webhook request failed with a retryable transport error.",
 					);
 					if (!attachmentsRetryable) {
 						state.logger?.warn(
@@ -3075,8 +3153,8 @@ const discord = {
 		const fileNames = extractFileNames(originalFiles);
 		const attemptText = ` after ${attemptsForMessage} attempt${attemptsForMessage === 1 ? "" : "s"}`;
 		const attachmentNotice = fileNames.length
-			? ` Discord aborted the upload${attemptText} for: ${fileNames.join(", ")}.`
-			: ` Discord aborted the upload${attemptText}.`;
+			? ` Discord failed to upload${attemptText} for: ${fileNames.join(", ")}.`
+			: ` Discord failed to upload${attemptText}.`;
 		const originalContent =
 			typeof args.content === "string" ? args.content.trim() : "";
 		const fallbackParts = [];
@@ -3096,7 +3174,7 @@ const discord = {
 		}
 		state.logger?.error(
 			{ err: lastAbortError, attempts: attemptsForMessage },
-			"Discord webhook request was aborted repeatedly; sending fallback message.",
+			"Discord webhook request failed repeatedly with a retryable transport error; sending fallback message.",
 		);
 		return await webhook.send(fallbackArgs);
 	},

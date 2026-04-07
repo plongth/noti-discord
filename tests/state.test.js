@@ -7,6 +7,7 @@ test("Default settings include DownloadDir", () => {
 	assert.equal(settings.DownloadDir, "./downloads");
 	assert.equal(settings.DiscordEmbedsToWhatsApp, false);
 	assert.equal(settings.redirectAnnouncementWebhooks, false);
+	assert.equal(settings.WhatsAppDiscordMediaBurstSize, 10);
 });
 
 test("sentMessages starts empty", () => {

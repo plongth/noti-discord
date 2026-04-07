@@ -70,6 +70,7 @@ test("parseSettings merges defaults when older settings are missing keys", async
 		assert.equal(settings.LocalDownloads, false);
 		assert.equal(settings.NewsletterMediaUrlFallback, false);
 		assert.equal(settings.PinDurationSeconds, 7 * 24 * 60 * 60);
+		assert.equal(settings.WhatsAppDiscordMediaBurstSize, 10);
 	});
 	restoreObject(state.settings, settingsSnapshot);
 });

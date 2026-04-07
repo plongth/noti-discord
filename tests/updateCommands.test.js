@@ -1028,3 +1028,65 @@ test("/poll in a newsletter-linked channel falls back to text when interactive a
 		resetClientFactoryOverrides();
 	}
 });
+
+test("/setwamediaburstsize updates WhatsApp to Discord media burst size", async () => {
+	const originalDiscordUtils = {
+		getGuild: utils.discord.getGuild,
+		getControlChannel: utils.discord.getControlChannel,
+	};
+	const originalSettings = {
+		Token: state.settings.Token,
+		GuildID: state.settings.GuildID,
+		ControlChannelID: state.settings.ControlChannelID,
+		WhatsAppDiscordMediaBurstSize:
+			state.settings.WhatsAppDiscordMediaBurstSize,
+	};
+	const originalDcClient = state.dcClient;
+
+	try {
+		state.settings.Token = "TEST_TOKEN";
+		state.settings.GuildID = "guild";
+		state.settings.ControlChannelID = "control";
+		state.settings.WhatsAppDiscordMediaBurstSize = 10;
+
+		utils.discord.getGuild = async () => ({
+			commands: { set: async () => {} },
+		});
+		utils.discord.getControlChannel = async () => ({ send: async () => {} });
+
+		const fakeClient = new FakeDiscordClient();
+		setClientFactoryOverrides({ createDiscordClient: () => fakeClient });
+		const discordHandler = await importDiscordHandler("set-wa-media-burst-size");
+		state.dcClient = await discordHandler.start();
+		await delay(0);
+
+		const interaction = createInteraction({
+			channelId: "control",
+			commandName: "setwamediaburstsize",
+			integerOptions: {
+				count: 4,
+			},
+		});
+		fakeClient.emit("interactionCreate", interaction);
+		await delay(0);
+
+		assert.equal(state.settings.WhatsAppDiscordMediaBurstSize, 4);
+		assert.equal(interaction.records.editReply.length, 1);
+		assert.equal(
+			interaction.records.editReply[0]?.content,
+			"WhatsApp to Discord media burst size is set to 4 attachments per batch.",
+		);
+	} finally {
+		utils.discord.getGuild = originalDiscordUtils.getGuild;
+		utils.discord.getControlChannel = originalDiscordUtils.getControlChannel;
+
+		state.settings.Token = originalSettings.Token;
+		state.settings.GuildID = originalSettings.GuildID;
+		state.settings.ControlChannelID = originalSettings.ControlChannelID;
+		state.settings.WhatsAppDiscordMediaBurstSize =
+			originalSettings.WhatsAppDiscordMediaBurstSize;
+
+		state.dcClient = originalDcClient;
+		resetClientFactoryOverrides();
+	}
+});

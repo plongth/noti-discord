@@ -215,9 +215,16 @@ How to find PN/LID:
 
 Defaults (out of the box):
 
+- WhatsApp → Discord media bursts use batches of `10` attachments (`/setwamediaburstsize` can lower this for slower machines or unstable connections).
 - Local downloads are disabled (`/localdownloads enabled:true` to turn on).
 - Download directory is `./downloads` and pruning is disabled (`/setdownloadlimit`, `/setdownloadmaxage`, `/setdownloadminfree` all default to `0` = off).
 - Local download server is disabled; when enabled it defaults to local-only (`127.0.0.1` bind, `localhost` URLs, port `8080`).
+
+### `/setwamediaburstsize`
+Set how many WhatsApp attachments WA2DC uploads to Discord per batch when mirroring media bursts.  
+Usage: `/setwamediaburstsize count:<1-10>`  
+Default: `10`  
+Lower values can help on slower machines or unstable connections, at the cost of producing more Discord messages for large WhatsApp image bursts.
 - Download links are signed (survive restarts) and never expire by default (`/setdownloadlinkttl seconds:0`).
 
 To make download links reachable from other devices (phone/PC), you usually want:
