@@ -5,9 +5,10 @@ This folder provides helper scripts to deploy WA2DC and the local wrapper from a
 ## Scripts
 
 - `do-setup.sh`: install Node.js 24 + PM2 and create deploy folders
-- `do-deploy.sh`: clone/pull source, create `.env` if missing, run `npm ci`, and start/reload PM2 ecosystem
+- `do-deploy.sh`: clone/pull source, create `.env` if missing, run `npm ci`, start/reload PM2 ecosystem, and install daily log cleanup cron
 - `do-update.sh`: pull latest source, run `npm ci`, and reload PM2 ecosystem
 - `do-backup.sh`: backup `storage/` (+ `.env` if present) into `.tar.gz` and prune old backups
+- `do-log-cleanup.sh`: truncate WA2DC and PM2 logs (used by daily cron)
 
 ## Typical flow on a new Droplet
 
@@ -40,6 +41,24 @@ All scripts support these optional environment variables:
 - `WA2DC_ENV_FILE` (deploy script only)
 - `WA2DC_BACKUP_DIR`, `WA2DC_BACKUP_RETENTION_DAYS` (backup script only)
 - `WA2DC_ECOSYSTEM_FILE` (deploy/update script only, default: `$WA2DC_APP_DIR/ecosystem.config.cjs`)
+- `WA2DC_INSTALL_LOG_CLEANUP_CRON` (deploy script only, default: `1`)
+- `WA2DC_LOG_CLEANUP_CRON` (deploy script only, default: `15 0 * * *`)
+- `WA2DC_LOG_CLEANUP_LOG` (deploy script only, default: `$WA2DC_DEPLOY_ROOT/log-cleanup.log`)
+
+## Daily log cleanup
+
+By default, `do-deploy.sh` installs/updates a cron job that runs every day at `00:15` and truncates:
+
+- `logs.txt`
+- `terminal.log`
+- PM2 app logs under `~/.pm2/logs/`
+- PM2 daemon log (`~/.pm2/pm2.log`)
+
+Run cleanup manually any time:
+
+```bash
+bash scripts/digitalocean/do-log-cleanup.sh
+```
 
 ## Optional cron backup
 

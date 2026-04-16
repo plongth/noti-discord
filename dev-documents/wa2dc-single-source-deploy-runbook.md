@@ -216,3 +216,29 @@ pm2 save
 - Chi expose wrapper noi bo (`127.0.0.1`) neu khong can truy cap tu ngoai.
 - Luon giu `pm2 save` sau moi lan deploy thanh cong.
 
+## 10) Auto clear logs moi ngay
+
+Flow DigitalOcean scripts da duoc cap nhat de tu dong cai cron clear log moi ngay khi chay:
+
+```bash
+bash scripts/digitalocean/do-deploy.sh
+```
+
+Mac dinh cron chay luc `00:15` moi ngay va goi:
+
+```bash
+bash scripts/digitalocean/do-log-cleanup.sh
+```
+
+Neu muon doi lich, set bien moi truong truoc deploy:
+
+```bash
+WA2DC_LOG_CLEANUP_CRON="0 1 * * *" bash scripts/digitalocean/do-deploy.sh
+```
+
+Neu muon tat auto-install cron:
+
+```bash
+WA2DC_INSTALL_LOG_CLEANUP_CRON=0 bash scripts/digitalocean/do-deploy.sh
+```
+

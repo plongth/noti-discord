@@ -9,6 +9,10 @@ DEPLOY_ROOT="${WA2DC_DEPLOY_ROOT:-$HOME/wa2dc}"
 APP_DIR="${WA2DC_APP_DIR:-${DEPLOY_ROOT}/app}"
 ENV_FILE="${WA2DC_ENV_FILE:-${APP_DIR}/.env}"
 ECOSYSTEM_FILE="${WA2DC_ECOSYSTEM_FILE:-${APP_DIR}/ecosystem.config.cjs}"
+LOG_CLEANUP_SCRIPT="${APP_DIR}/scripts/digitalocean/do-log-cleanup.sh"
+INSTALL_LOG_CLEANUP_CRON="${WA2DC_INSTALL_LOG_CLEANUP_CRON:-1}"
+LOG_CLEANUP_CRON="${WA2DC_LOG_CLEANUP_CRON:-15 0 * * *}"
+LOG_CLEANUP_LOG="${WA2DC_LOG_CLEANUP_LOG:-${DEPLOY_ROOT}/log-cleanup.log}"
 
 log() {
 	printf '[wa2dc-do-deploy] %s\n' "$*"
@@ -83,6 +87,10 @@ if [[ ! -f "${ECOSYSTEM_FILE}" ]]; then
 	die "PM2 ecosystem file not found: ${ECOSYSTEM_FILE}"
 fi
 
+if [[ ! -f "${LOG_CLEANUP_SCRIPT}" ]]; then
+	die "Log cleanup script not found: ${LOG_CLEANUP_SCRIPT}"
+fi
+
 mkdir -p "${APP_DIR}/storage"
 
 log "Installing dependencies"
@@ -97,6 +105,21 @@ log "Starting/reloading PM2 ecosystem"
 	pm2 startOrReload "${ECOSYSTEM_FILE}" --update-env
 	pm2 save
 )
+
+if [[ "${INSTALL_LOG_CLEANUP_CRON}" == "1" ]]; then
+	log "Configuring daily log cleanup cron"
+	cron_entry="${LOG_CLEANUP_CRON} WA2DC_DEPLOY_ROOT=${DEPLOY_ROOT} WA2DC_APP_DIR=${APP_DIR} /bin/bash ${LOG_CLEANUP_SCRIPT} >> ${LOG_CLEANUP_LOG} 2>&1"
+	current_cron="$(crontab -l 2>/dev/null || true)"
+	filtered_cron="$(printf '%s\n' "${current_cron}" | grep -v 'do-log-cleanup.sh' || true)"
+	if [[ -n "${filtered_cron}" ]]; then
+		printf '%s\n%s\n' "${filtered_cron}" "${cron_entry}" | crontab -
+	else
+		printf '%s\n' "${cron_entry}" | crontab -
+	fi
+	log "Installed cron entry: ${cron_entry}"
+else
+	log "Skipping cron installation (WA2DC_INSTALL_LOG_CLEANUP_CRON=${INSTALL_LOG_CLEANUP_CRON})"
+fi
 
 log "Deployment finished"
 log "Show logs: pm2 logs wa2dc-bot --lines 200"
