@@ -24,6 +24,7 @@ import { resolveRestartFlagPath } from "./runnerLogic.js";
 import state from "./state.js";
 import storage from "./storage.js";
 import utils from "./utils.js";
+import wrapperClient from "./wrapperClient.js";
 
 const {
   ActionRowBuilder,
@@ -1804,6 +1805,80 @@ const commandHandlers = {
     description: "Check the bot latency.",
     async execute(ctx) {
       await ctx.reply(`Pong ${Date.now() - ctx.createdTimestamp}ms!`);
+    },
+  },
+  run: {
+    description: "Run a command through the local Arespawn wrapper.",
+    options: [
+      {
+        name: "command",
+        description: "Command name to execute on wrapper.",
+        type: ApplicationCommandOptionTypes.STRING,
+        required: true,
+      },
+      {
+        name: "args",
+        description: "Optional command args as text or JSON string.",
+        type: ApplicationCommandOptionTypes.STRING,
+        required: false,
+      },
+    ],
+    async execute(ctx) {
+      const command = ctx.getStringOption("command")?.trim();
+      const rawArgs = ctx.getStringOption("args")?.trim();
+      if (!command) {
+        await ctx.reply("Please provide `command`.");
+        return;
+      }
+
+      let args = rawArgs || null;
+      if (rawArgs && (rawArgs.startsWith("{") || rawArgs.startsWith("["))) {
+        try {
+          args = JSON.parse(rawArgs);
+        } catch {
+          await ctx.reply("`args` looks like JSON but is invalid.");
+          return;
+        }
+      }
+
+      const requestId = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+      try {
+        const result = await wrapperClient.executeRunCommand({
+          command,
+          args,
+          requestId,
+          context: {
+            guildId: ctx.interaction?.guildId || null,
+            channelId: ctx.channel?.id || null,
+            userId: ctx.interaction?.user?.id || null,
+            commandName: ctx.interaction?.commandName || "run",
+          },
+        });
+        const responsePayload =
+          result?.payload && typeof result.payload === "object"
+            ? (result.payload.data ?? result.payload)
+            : result?.payload;
+        await ctx.replyPartitioned(
+          wrapperClient.formatRunReply({
+            payload: responsePayload,
+            requestId: result.requestId,
+          }),
+        );
+      } catch (err) {
+        state.logger?.error(
+          {
+            err,
+            command,
+            requestId,
+            statusCode: err?.statusCode || null,
+            executeUrl: err?.executeUrl || null,
+          },
+          "Wrapper command failed",
+        );
+        await ctx.reply(
+          `Wrapper command failed: ${err?.message || "Unknown error."}\n\nrequestId: ${requestId}`,
+        );
+      }
     },
   },
   chatinfo: {

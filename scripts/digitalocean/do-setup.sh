@@ -46,23 +46,23 @@ apt-get update
 log "Installing base dependencies"
 apt-get install -y ca-certificates curl git gnupg lsb-release tar
 
-if ! command -v docker >/dev/null 2>&1; then
-	log "Installing Docker Engine"
-	install -m 0755 -d /etc/apt/keyrings
-	curl -fsSL https://download.docker.com/linux/${ID}/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-	chmod a+r /etc/apt/keyrings/docker.gpg
-	echo \
-		"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${ID} \
-		$(. /etc/os-release && echo "${VERSION_CODENAME}") stable" >/etc/apt/sources.list.d/docker.list
-	apt-get update
-	apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+if ! command -v node >/dev/null 2>&1 || ! node -v | grep -Eq '^v2[4-9]\.'; then
+	log "Installing Node.js 24.x from NodeSource"
+	curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+	apt-get install -y nodejs
 else
-	log "Docker already installed: $(docker --version)"
+	log "Node.js already installed: $(node -v)"
 fi
 
-if id "${DEPLOY_USER}" >/dev/null 2>&1; then
-	log "Adding ${DEPLOY_USER} to docker group"
-	usermod -aG docker "${DEPLOY_USER}" || true
+if ! command -v npm >/dev/null 2>&1; then
+	die "npm not found after Node.js installation."
+fi
+
+if ! command -v pm2 >/dev/null 2>&1; then
+	log "Installing PM2 globally"
+	npm install -g pm2
+else
+	log "PM2 already installed: $(pm2 -v)"
 fi
 
 log "Creating deploy directories at ${DEPLOY_ROOT}"
@@ -70,4 +70,7 @@ install -d -m 0755 "${DEPLOY_ROOT}"
 install -d -m 0755 "${DEPLOY_ROOT}/backups"
 
 log "Setup complete"
+log "Node: $(node -v)"
+log "npm: $(npm -v)"
+log "PM2: $(pm2 -v)"
 log "Next step: run do-deploy.sh as ${DEPLOY_USER}"

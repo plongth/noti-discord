@@ -29,7 +29,16 @@ trap 'on_error "$LINENO"' ERR
 mkdir -p "${BACKUP_DIR}"
 
 log "Creating backup archive ${ARCHIVE}"
-tar -C "${APP_DIR}" -czf "${ARCHIVE}" storage
+
+backup_items=(storage)
+if [[ -f "${APP_DIR}/.env" ]]; then
+	backup_items+=(.env)
+fi
+if [[ -f "${APP_DIR}/ecosystem.config.cjs" ]]; then
+	backup_items+=(ecosystem.config.cjs)
+fi
+
+tar -C "${APP_DIR}" -czf "${ARCHIVE}" "${backup_items[@]}"
 
 if [[ "${RETENTION_DAYS}" =~ ^[0-9]+$ ]] && (( RETENTION_DAYS > 0 )); then
 	log "Pruning backups older than ${RETENTION_DAYS} days"

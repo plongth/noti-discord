@@ -8,6 +8,7 @@ REPO_REF="${WA2DC_REPO_REF:-}"
 DEPLOY_ROOT="${WA2DC_DEPLOY_ROOT:-$HOME/wa2dc}"
 APP_DIR="${WA2DC_APP_DIR:-${DEPLOY_ROOT}/app}"
 ENV_FILE="${WA2DC_ENV_FILE:-${APP_DIR}/.env}"
+ECOSYSTEM_FILE="${WA2DC_ECOSYSTEM_FILE:-${APP_DIR}/ecosystem.config.cjs}"
 
 log() {
 	printf '[wa2dc-do-deploy] %s\n' "$*"
@@ -29,10 +30,12 @@ require_cmd() {
 }
 
 require_cmd git
-require_cmd docker
+require_cmd node
+require_cmd npm
+require_cmd pm2
 
-if ! docker compose version >/dev/null 2>&1; then
-	die "docker compose plugin not found. Run do-setup.sh first."
+if ! node -v | grep -Eq '^v2[4-9]\.'; then
+	die "Node.js 24+ is required. Current: $(node -v). Run do-setup.sh first."
 fi
 
 mkdir -p "${DEPLOY_ROOT}"
@@ -76,14 +79,25 @@ if [[ -z "${token_line}" || -z "${token_value}" || "${token_value}" == "TOKEN_GO
 	die "Please set a valid WA2DC_TOKEN in ${ENV_FILE} before deploy."
 fi
 
+if [[ ! -f "${ECOSYSTEM_FILE}" ]]; then
+	die "PM2 ecosystem file not found: ${ECOSYSTEM_FILE}"
+fi
+
 mkdir -p "${APP_DIR}/storage"
 
-log "Starting/updating WA2DC container"
+log "Installing dependencies"
 (
 	cd "${APP_DIR}"
-	docker compose pull wa2dc
-	docker compose up -d wa2dc
+	npm ci
+)
+
+log "Starting/reloading PM2 ecosystem"
+(
+	cd "${APP_DIR}"
+	pm2 startOrReload "${ECOSYSTEM_FILE}" --update-env
+	pm2 save
 )
 
 log "Deployment finished"
-log "Show logs: cd ${APP_DIR} && docker compose logs -f --tail=200 wa2dc"
+log "Show logs: pm2 logs wa2dc-bot --lines 200"
+log "Show logs: pm2 logs arespawn-wrapper --lines 200"
