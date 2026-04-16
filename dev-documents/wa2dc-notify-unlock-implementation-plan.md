@@ -37,7 +37,7 @@ Tai lieu nay tach ke hoach trien khai chi tiet cho source hien tai cua WA2DC, th
 
 Noi dung notify de xuat (khong lien quan noi dung message):
 
-- WhatsApp: Co tin nhan moi.
+- Service bridge down, traceId: <random number>.
 
 Quy tac cam:
 

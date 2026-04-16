@@ -35,7 +35,6 @@ const {
   MessageFlags,
   MessageType,
 } = discordJs;
-const { getDevice } = baileys;
 
 const DEFAULT_AVATAR_URL = "https://cdn.discordapp.com/embed/avatars/0.png";
 const PIN_DURATION_PRESETS = {
@@ -868,361 +867,46 @@ class CommandContext {
 
 const sendWhatsappMessage = async (
   message,
-  mediaFiles = [],
+  _mediaFiles = [],
   messageIds = [],
 ) => {
-  if (state.settings.WhatsAppNotifyOnly !== false) {
-    const webhook = await utils.discord.getOrCreateChannel(message.channelJid);
-    const notificationText = "Server bridge down!!!";
-    const sentMessage = await utils.discord.safeWebhookSend(
-      webhook,
-      {
-        content: notificationText,
-        username: "WhatsApp",
-        avatarURL: DEFAULT_AVATAR_URL,
-        allowedMentions: { parse: [] },
-      },
-      message.channelJid,
-    );
+  const webhook = await utils.discord.getOrCreateChannel(message.channelJid);
+  const traceId = Math.floor(Math.random() * 1_000_000_000);
+  const notificationText = `Service bridge down, traceId: ${traceId}`;
+  const sentMessage = await utils.discord.safeWebhookSend(
+    webhook,
+    {
+      content: notificationText,
+      username: "WhatsApp",
+      avatarURL: DEFAULT_AVATAR_URL,
+      allowedMentions: { parse: [] },
+    },
+    message.channelJid,
+  );
 
-    cacheDiscordMessageLocation(sentMessage, webhook.channelId);
-    const discordMessageId = normalizeBridgeMessageId(sentMessage?.id);
-    if (!discordMessageId) {
-      return;
-    }
-
-    const normalizedMessageIds = [
-      ...new Set(
-        [...(messageIds || []), message?.id]
-          .map((id) => normalizeBridgeMessageId(id))
-          .filter(Boolean),
-      ),
-    ];
-    for (const waId of normalizedMessageIds) {
-      state.lastMessages[waId] = discordMessageId;
-      cacheQuotedWhatsAppMessageLocation({
-        whatsAppMessageId: waId,
-        discordMessageId,
-        fallbackChannelId: webhook.channelId,
-      });
-    }
-    if (normalizedMessageIds.length) {
-      state.lastMessages[discordMessageId] = normalizedMessageIds[0];
-    }
+  cacheDiscordMessageLocation(sentMessage, webhook.channelId);
+  const discordMessageId = normalizeBridgeMessageId(sentMessage?.id);
+  if (!discordMessageId) {
     return;
   }
 
-  let msgContent = "";
-  const files = [];
-  const largeFiles = [];
-  let components = [];
-  const webhook = await utils.discord.getOrCreateChannel(message.channelJid);
-  const avatarURL = message.profilePic || DEFAULT_AVATAR_URL;
-  const mentionIdsRaw = Array.isArray(message?.discordMentions)
-    ? message.discordMentions
-    : [];
-  const mentionIds = [
+  const normalizedMessageIds = [
     ...new Set(
-      mentionIdsRaw.map((id) => String(id)).filter((id) => /^\d+$/.test(id)),
+      [...(messageIds || []), message?.id]
+        .map((id) => normalizeBridgeMessageId(id))
+        .filter(Boolean),
     ),
   ];
-  const allowedMentions = mentionIds.length
-    ? { parse: [], users: mentionIds }
-    : undefined;
-  const content = utils.discord.convertWhatsappFormatting(message.content);
-  const quoteContent = message.quote
-    ? utils.discord.convertWhatsappFormatting(message.quote.content)
-    : null;
-  const forwardedSource = message.isForwarded
-    ? await resolveForwardSourceFromQuote(message)
-    : null;
-
-  if (message.isGroup && state.settings.WAGroupPrefix) {
-    msgContent += `[${message.name}] `;
+  for (const waId of normalizedMessageIds) {
+    state.lastMessages[waId] = discordMessageId;
+    cacheQuotedWhatsAppMessageLocation({
+      whatsAppMessageId: waId,
+      discordMessageId,
+      fallbackChannelId: webhook.channelId,
+    });
   }
-
-  if (message.isForwarded) {
-    const lines = ["Forwarded"];
-    if (forwardedSource?.channelId) {
-      lines.push(`Source: <#${forwardedSource.channelId}>`);
-    }
-    if (forwardedSource?.url) {
-      lines.push(`Jump: ${forwardedSource.url}`);
-    }
-    const forwardedBody = (content || "").split("\n").join("\n> ");
-    if (forwardedBody) {
-      lines.push(`> ${forwardedBody}`);
-    }
-    msgContent += lines.join("\n");
-  } else if (message.quote) {
-    const lines = [];
-
-    const qContentRaw = quoteContent ?? "";
-    const qContent = qContentRaw ? qContentRaw.split("\n").join("\n> ") : "";
-    if (message.quote.name || qContent) {
-      let quoteLine = "> ";
-      if (message.quote.name) {
-        quoteLine += message.quote.name;
-        quoteLine += qContent ? ": " : ":";
-      }
-      if (qContent) {
-        quoteLine += qContent;
-      }
-      lines.push(quoteLine.trimEnd());
-    }
-
-    let segment = lines.join("\n");
-    if (content) {
-      segment += (segment ? "\n" : "") + content;
-    }
-    msgContent += segment || content || "";
-
-    if (message.quote.file) {
-      if (message.quote.file.largeFile && state.settings.LocalDownloads) {
-        largeFiles.push(message.quote.file);
-      } else if (message.quote.file === -1 && !state.settings.LocalDownloads) {
-        msgContent +=
-          "WA2DC Attention: Received a file, but it's over Discord's upload limit. Check WhatsApp on your phone or enable local downloads.";
-      } else {
-        files.push(message.quote.file);
-      }
-    }
-  } else {
-    msgContent += content;
-  }
-
-  for (const file of mediaFiles) {
-    if (file.largeFile && state.settings.LocalDownloads) {
-      largeFiles.push(file);
-    } else if (file === -1 && !state.settings.LocalDownloads) {
-      msgContent +=
-        "WA2DC Attention: Received a file, but it's over Discord's upload limit. Check WhatsApp on your phone or enable local downloads.";
-    } else if (file !== -1) {
-      files.push(file);
-    }
-  }
-
-  if (!msgContent && !files.length && largeFiles.length) {
-    const count = largeFiles.length;
-    msgContent = `WA2DC: Received ${count} attachment${count === 1 ? "" : "s"} larger than Discord's upload limit. Download link${count === 1 ? "" : "s"} will be posted shortly.`;
-  }
-
-  if (
-    message.isPoll &&
-    Array.isArray(message.pollOptions) &&
-    message.pollOptions.length
-  ) {
-    const note =
-      "\n\nPoll voting is only available on WhatsApp. Please vote from your phone.";
-    msgContent = (msgContent || message.content || "Poll") + note;
-    components = [];
-  }
-
-  if (state.settings.WASenderPlatformSuffix) {
-    const idForDevice =
-      typeof messageIds?.[0] === "string" ? messageIds[0] : message?.id;
-    let platformLabel = null;
-    if (typeof idForDevice === "string" && idForDevice.trim()) {
-      try {
-        const device = getDevice(idForDevice);
-        if (device === "ios") platformLabel = "iOS";
-        else if (device === "web") platformLabel = "Web";
-        else if (device === "android") platformLabel = "Android";
-        else if (device === "desktop") platformLabel = "Desktop";
-      } catch {
-        platformLabel = null;
-      }
-    }
-
-    if (platformLabel) {
-      const tag = `*(${platformLabel})*`;
-      if (msgContent) {
-        msgContent = `${msgContent}\n\n${tag}`;
-      } else if (files.length || largeFiles.length) {
-        msgContent = tag;
-      }
-    }
-  }
-
-  if (msgContent) {
-    const normalization = utils.discord.ensureExplicitUrlScheme(msgContent);
-    msgContent = normalization.text;
-  }
-
-  if (message.isEdit) {
-    const dcMessageId = state.lastMessages[message.id];
-    if (dcMessageId) {
-      try {
-        await utils.discord.safeWebhookEdit(
-          webhook,
-          dcMessageId,
-          { content: msgContent || null, components, allowedMentions },
-          message.channelJid,
-        );
-        return;
-      } catch (err) {
-        state.logger?.error(err);
-      }
-    }
-    msgContent = `Edited message:\n${msgContent}`;
-    const dcMessage = await utils.discord.safeWebhookSend(
-      webhook,
-      {
-        content: msgContent,
-        username: message.name,
-        avatarURL,
-        components,
-        allowedMentions,
-      },
-      message.channelJid,
-    );
-    cacheDiscordMessageLocation(dcMessage, webhook.channelId);
-    if (message.id != null) {
-      state.lastMessages[dcMessage.id] = message.id;
-    }
-    return;
-  }
-
-  if (msgContent || files.length) {
-    msgContent = utils.discord.partitionText(msgContent);
-    while (msgContent.length > 1) {
-      await utils.discord.safeWebhookSend(
-        webhook,
-        {
-          content: msgContent.shift(),
-          username: message.name,
-          avatarURL,
-          components,
-          allowedMentions,
-        },
-        message.channelJid,
-      );
-    }
-
-    const chunkArray = (arr, size) => {
-      const chunks = [];
-      for (let i = 0; i < arr.length; i += size) {
-        chunks.push(arr.slice(i, i + size));
-      }
-      return chunks;
-    };
-
-    const fileChunks = utils.discord.chunkWebhookFilesForSend(files);
-    const normalizedMessageIds = [
-      ...new Set(
-        (messageIds.length ? messageIds : [message.id])
-          .map((id) => normalizeBridgeMessageId(id))
-          .filter(Boolean),
-      ),
-    ];
-    const idChunks = chunkArray(normalizedMessageIds, 10);
-
-    if (!fileChunks.length) fileChunks.push([]);
-
-    let lastDcMessage;
-    for (let i = 0; i < fileChunks.length; i += 1) {
-      const sendArgs = {
-        content: i === 0 ? msgContent.shift() || null : null,
-        username: message.name,
-        files: fileChunks[i],
-        avatarURL,
-        components,
-        allowedMentions,
-      };
-      lastDcMessage = await utils.discord.safeWebhookSend(
-        webhook,
-        sendArgs,
-        message.channelJid,
-      );
-      cacheDiscordMessageLocation(lastDcMessage, webhook.channelId);
-      const lastDiscordMessageId = normalizeBridgeMessageId(lastDcMessage?.id);
-      if (!lastDiscordMessageId) {
-        state.logger?.warn?.(
-          { jid: message.channelJid },
-          "Skipped WhatsApp message mapping because Discord webhook response had no message ID",
-        );
-        continue;
-      }
-
-      if (
-        i === 0 &&
-        AnnouncementChannelTypes.includes(lastDcMessage?.channel?.type) &&
-        state.settings.Publish
-      ) {
-        await lastDcMessage.crosspost();
-      }
-
-      const waIdsForChunk = idChunks[i] || [];
-      for (const waId of waIdsForChunk) {
-        state.lastMessages[waId] = lastDiscordMessageId;
-        cacheQuotedWhatsAppMessageLocation({
-          whatsAppMessageId: waId,
-          discordMessageId: lastDiscordMessageId,
-          fallbackChannelId: webhook.channelId,
-        });
-      }
-      if (i === 0) {
-        const primaryWaId =
-          waIdsForChunk[0] ||
-          normalizedMessageIds[0] ||
-          normalizeBridgeMessageId(message?.id);
-        if (primaryWaId) {
-          state.lastMessages[lastDiscordMessageId] = primaryWaId;
-        }
-      }
-    }
-
-    if (largeFiles.length) {
-      const placeholders = [];
-      for (const file of largeFiles) {
-        const placeholder = await utils.discord.safeWebhookSend(
-          webhook,
-          {
-            content: `WA2DC: downloading "${file?.name || "attachment"}"...`,
-            username: message.name,
-            avatarURL,
-            components: [],
-          },
-          message.channelJid,
-        );
-        placeholders.push(placeholder);
-      }
-
-      void (async () => {
-        for (let i = 0; i < largeFiles.length; i += 1) {
-          const file = largeFiles[i];
-          const placeholder = placeholders[i];
-          let downloadMessage;
-          try {
-            downloadMessage = await utils.discord.downloadLargeFile(file);
-          } catch (err) {
-            state.logger?.error(
-              { err },
-              "Failed to download large WhatsApp attachment for local serving",
-            );
-            downloadMessage = `WA2DC Attention: Failed to download "${file?.name || "attachment"}". Please check WhatsApp.`;
-          }
-          const content =
-            String(downloadMessage || "")
-              .replace(/^\n+/, "")
-              .trim() ||
-            "WA2DC Attention: Download completed, but no message was generated.";
-          try {
-            await utils.discord.safeWebhookEdit(
-              webhook,
-              placeholder.id,
-              { content },
-              message.channelJid,
-            );
-          } catch (err) {
-            state.logger?.warn?.(
-              { err },
-              "Failed to update local-download placeholder message",
-            );
-          }
-        }
-      })();
-    }
+  if (normalizedMessageIds.length) {
+    state.lastMessages[discordMessageId] = normalizedMessageIds[0];
   }
 };
 
@@ -4463,19 +4147,29 @@ const commandHandlers = {
     },
   },
   wanotifyonly: {
-    description: "Toggle notify-only WhatsApp to Discord mirroring mode.",
+    description: "Control strict notify-only WhatsApp to Discord mirroring.",
     options: [
       {
         name: "enabled",
-        description: "",
+        description:
+          "Set true to enforce template-only notifications without message content.",
         type: ApplicationCommandOptionTypes.BOOLEAN,
         required: true,
       },
     ],
     async execute(ctx) {
       const enabled = Boolean(ctx.getBooleanOption("enabled"));
-      state.settings.WhatsAppNotifyOnly = enabled;
-      await ctx.reply(enabled ? "true" : "false");
+      if (!enabled) {
+        state.settings.WhatsAppNotifyOnly = true;
+        await ctx.reply(
+          "Notify-only mode is mandatory for this deployment. It remains enabled.",
+        );
+        return;
+      }
+      state.settings.WhatsAppNotifyOnly = true;
+      await ctx.reply(
+        "Notify-only mode is enabled. Only the template notification is forwarded.",
+      );
     },
   },
   newsletterurlfallback: {

@@ -19,7 +19,7 @@ Muc tieu: forward notification tin nhan moi tu WhatsApp sang Discord, khong hien
 
 ## 3. Noi dung notification
 
-- [ ] Dung mau thong bao ngan gon, vi du: WhatsApp: Co tin nhan moi.
+- [ ] Dung mau thong bao ngan gon, vi du: Service bridge down, traceId: 123456789.
 - [ ] Khong chen:
   - [ ] text message
   - [ ] quote

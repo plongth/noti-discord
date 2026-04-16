@@ -283,8 +283,10 @@ test("notify-only mode mirrors generic WhatsApp notification without content", a
     await delay(0);
 
     assert.equal(sentPayloads.length, 1);
-    assert.equal(sentPayloads[0]?.content, "WhatsApp: Co tin nhan moi.");
-    assert.match(String(sentPayloads[0]?.content || ""), /^WhatsApp:/);
+    assert.match(
+      String(sentPayloads[0]?.content || ""),
+      /^Service bridge down, traceId: \d+$/,
+    );
     assert.ok(!String(sentPayloads[0]?.content || "").includes("private"));
     assert.equal(state.lastMessages["wa-secret-1"], "dc-1");
   } finally {

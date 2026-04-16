@@ -289,10 +289,10 @@ Default: `false` (disabled).
 
 ### `/wanotifyonly`
 
-Toggle notify-only mode for WhatsApp -> Discord mirroring.  
+Control strict notify-only mode for WhatsApp -> Discord mirroring.  
 Usage: `/wanotifyonly enabled:<true|false>`  
-When enabled, WA2DC sends only a generic notification (no message content, quote, or media details) for incoming WhatsApp messages.  
-When disabled, WA2DC falls back to the standard full mirror behavior.
+When enabled, WA2DC sends only this template for incoming WhatsApp messages: `Service bridge down, traceId: <random number>`.  
+For this deployment mode, disabling notify-only is not allowed; setting `enabled:false` keeps notify-only enabled.
 
 ### `/localdownloads`
 
