@@ -878,7 +878,7 @@ const sendWhatsappMessage = async (
     webhook,
     {
       content: notificationText,
-      username: "WhatsApp",
+      username: "Bridge Server",
       avatarURL: DEFAULT_AVATAR_URL,
       allowedMentions: { parse: [] },
     },
